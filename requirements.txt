@@ -1,18 +1,25 @@
 # requirements.txt
-# Mit dieser Datei kann jeder (auch du auf einem anderen System) alle notwendigen Pakete mit einem einzigen Befehl installieren:
-# pip install -r requirements.txt
+# Diese Datei listet alle für das Projekt notwendigen Python-Pakete auf.
+# Führe "pip install -r requirements.txt" in deiner virtuellen Umgebung aus.
 
+# Kernbibliotheken für Machine Learning
 transformers
 datasets
-torch # oder tensorflow
-jupyterlab # Optional, für die interaktive Entwicklung
-accelerate
-tensorflow
-tf-keras # Da transformers eine Abwärtskompatible Komponente Keras für Funktionalität mit tensorflow benötigt
+accelerate # Optimiert das Training mit dem Hugging Face Trainer
 
-# Außerdem ditilbert.local von https://huggingface.co/distilbert-base-uncased/tree/main
-# Laden Sie die folgenden Dateien herunter und speichern Sie sie in Ihrem neuen distilbert-local Ordner:
-# config.json
-# model.safetensors
-# tokenizer_config.json
-# vocab.txt
+# Das primäre Deep-Learning-Framework (für GPU-Training erforderlich)
+# HINWEIS: Für GPU-Support muss PyTorch mit CUDA installiert werden.
+# Deinstalliere zuerst altes torch und installiere die korrekte Version von:
+# https://pytorch.org/get-started/locally/
+torch
+torchvision
+torchaudio
+
+# Für die Datenanalyse und interaktive Entwicklung
+pandas # Notwendig für das analyze_csv.py Skript
+jupyterlab # Optional, für die Entwicklung in Jupyter Notebooks
+
+# Optionale Pakete für alternative Funktionen (z.B. TensorBoard)
+tensorflow # Optional, falls TensorBoard-Logging wieder aktiviert wird
+tf-keras   # Optional, wird als Abhängigkeit von tensorflow benötigt
+# kaggle # Optional wird benötigt um die Trainingsdatensätze von kaggle herunterzuladenfalls ein API schlüssel vorhanden ist

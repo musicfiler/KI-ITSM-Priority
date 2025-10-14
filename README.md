@@ -1,185 +1,104 @@
 # KI-ITSM-Priority
-Machine Learning to analyse ticket priority by first user/customer message
 
-Änderungen für GPU Version:
-Ja, das ist eine sehr wichtige Optimierung. Das Skript kann so angepasst werden, dass es automatisch eine verfügbare GPU nutzt und ansonsten auf die CPU zurückfällt.
+Ein Machine-Learning-Projekt zur automatischen Analyse und Priorisierung von ITSM-Tickets basierend auf der initialen Nachricht des Kunden.
 
-Der `transformers.Trainer` ist bereits so konzipiert, dass er eine GPU automatisch erkennt. Das Hauptproblem ist meist nicht der Code, sondern dass die installierte **PyTorch-Version keine GPU-Unterstützung (CUDA) hat.**
+## Projektziel
 
-Wir passen das Skript so an, dass es uns beim Start klar darüber informiert, welches Gerät es verwendet, und ich erkläre dir, wie du die richtige Umgebung dafür schaffst.
+Das Ziel dieses Projekts ist es, ein auf `distilbert-base-uncased` feinabgestimmtes Modell zu trainieren, das in der Lage ist, deutschsprachige Support-Tickets zu lesen und ihnen eine von fünf Prioritätsstufen (`critical`, `high`, `medium`, `low`, `very_low`) zuzuweisen.
 
------
+---
 
-## Schritt 1: Die richtige PyTorch-Version installieren (Entscheidend)
+## Setup & Installation
 
-Damit dein Code eine NVIDIA-GPU nutzen kann, muss PyTorch mit CUDA-Unterstützung installiert sein. Deine aktuelle Konfiguration scheint eine reine CPU-Version zu sein.
+Folge diesen Schritten, um das Projekt lokal einzurichten.
+
+### 1. Repository klonen
+
+```bash
+git clone <URL-deines-Repositories>
+cd KI-ITSM-Priority
+```
+
+### 2. Virtuelle Umgebung erstellen
+
+Es wird dringend empfohlen, eine virtuelle Umgebung zu verwenden.
+
+```bash
+# Windows
+python -m venv .venv
+.venv\Scripts\activate
+
+# macOS / Linux
+python -m venv .venv
+source .venv/bin/activate
+```
+
+### 3. Python-Pakete installieren
+
+Installiere alle notwendigen Bibliotheken mit der `requirements.txt`-Datei.
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Trainingsdaten beziehen (2 Optionen)
+
+Du benötigst den Datensatz `multilingual-customer-support-tickets`.
+
+#### Option A: Manueller Download (Empfohlen, falls der automatische fehlschlägt)
+
+1.  Gehe zur Kaggle-Datensatzseite: [tobiasbueck/multilingual-customer-support-tickets](https://www.kaggle.com/datasets/tobiasbueck/multilingual-customer-support-tickets)
+2.  Klicke auf den **Download**-Button, um die ZIP-Datei herunterzuladen.
+3.  Entpacke das heruntergeladene ZIP-Archiv.
+4.  Erstelle im Hauptverzeichnis deines Projekts einen Ordner namens `trainingsdaten`.
+5.  Kopiere die Datei `dataset-tickets-german_normalized_50_5_2.csv` aus dem entpackten Archiv in den `trainingsdaten`-Ordner.
+
+#### Option B: Automatischer Download
+
+Für den automatischen Download musst du einmalig deinen Kaggle API-Token einrichten:
+1.  Gehe zu deinem Kaggle-Account -> "API" -> "Create New Token", um die `kaggle.json` herunterzuladen.
+2.  Platziere die `kaggle.json` in `C:\Users\<Dein-Benutzer>\.kaggle\` (Windows) oder `~/.kaggle/` (macOS/Linux).
+
+### 5. Setup-Skript ausführen
+
+Das Setup-Skript lädt das Basis-Modell von Hugging Face und versucht, die Trainingsdaten von Kaggle herunterzuladen, falls sie nicht manuell hinzugefügt wurden.
+
+```bash
+python setup_project.py
+```
+
+---
+
+## Verwendung
+
+Nach dem erfolgreichen Setup kannst du die folgenden Skripte ausführen:
+
+1.  **Daten analysieren (Optional)**
+    ```bash
+    python analyze_csv.py
+    ```
+2.  **Modell trainieren**
+    ```bash
+    python train_model.py
+    ```
+3.  **Mit dem Modell chatten**
+    ```bash
+    python chat_with_model.py
+    ```
+
+---
+
+## Wichtiger Hinweis zum GPU-Training
+
+Der `transformers.Trainer` erkennt eine GPU automatisch. Das Hauptproblem ist oft nicht der Code, sondern eine PyTorch-Installation ohne GPU-Unterstützung (CUDA).
 
 1.  **Bestehende PyTorch-Version deinstallieren:**
-
     ```bash
     pip uninstall torch torchvision torchaudio
     ```
-
-2.  **GPU-Treiber prüfen:** Öffne die Kommandozeile (CMD oder PowerShell) und gib `nvidia-smi` ein. Dieser Befehl zeigt dir deine installierte Treiberversion und die höchste unterstützte CUDA-Version an.
-
-3.  **Korrekten Installationsbefehl generieren:**
-    Gehe auf die offizielle PyTorch-Webseite: [https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
-    Wähle dort die passenden Optionen für dein System aus (z.B. Stable, Windows, Pip, CUDA 12.1). Die Webseite generiert dir dann den korrekten Installationsbefehl.
-
-    Für eine typische Windows-Installation mit einer neueren NVIDIA-Karte lautet der Befehl oft so:
-
+2.  **GPU-Treiber prüfen:** Öffne die Kommandozeile und gib `nvidia-smi` ein, um deine unterstützte CUDA-Version zu sehen.
+3.  **Korrekten Installationsbefehl generieren:** Gehe auf die [offizielle PyTorch-Webseite](https://pytorch.org/get-started/locally/) und wähle die passenden Optionen für dein System (z.B. Stable, Windows, Pip, CUDA).
+    *Beispiel für eine NVIDIA 4070 (CUDA 12.1 oder höher):*
     ```bash
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-    oder wie in diesem Fall bei einer NVIDIA 4070:
-    pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+    pip install torch torchvision torchaudio --index-url [https://download.pytorch.org/whl/cu121](https://download.pytorch.org/whl/cu121)
     ```
-
-    **Wichtig:** Verwende den Befehl, der für **deine CUDA-Version** von der Webseite generiert wird.
-
------
-
-## Schritt 2: Skript anpassen für informative Ausgabe
-
-Jetzt fügen wir dem Skript eine Prüfung hinzu. So siehst du bei jedem Start sofort, ob die GPU-Erkennung erfolgreich war. Der `Trainer` selbst benötigt keine weiteren Änderungen.
-
-### Vollständiges, angepasstes Skript
-
-```python
-# train_model.py
-
-# Erforderliche Bibliotheken importieren
-import os
-import sys
-import time
-import torch # Hinzugefügt, um die GPU-Verfügbarkeit zu prüfen
-from datetime import datetime
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, Trainer
-from datasets import load_dataset
-
-
-def main():
-    """
-    Diese Funktion steuert den gesamten Prozess:
-    1. Konfiguration und Vorab-Prüfungen durchführen
-    2. Daten laden
-    3. Modell und Tokenizer vorbereiten
-    4. Daten verarbeiten (Tokenisierung und Label-Vorbereitung)
-    5. Modell trainieren
-    6. Modell speichern
-    """
-    print("Starte den Trainingsprozess...")
-
-    # === Schritt 1: Konfiguration, Diagnose und Geräte-Prüfung ===
-    
-    # --- NEU: GPU-Verfügbarkeit prüfen ---
-    if torch.cuda.is_available():
-        print("✅ GPU gefunden! Das Training wird auf der GPU ausgeführt. 🚀")
-    else:
-        print("⚠️ Keine GPU gefunden oder PyTorch ist nicht für GPU konfiguriert. Das Training wird auf der CPU ausgeführt (deutlich langsamer).")
-    # --------------------------------------------------------
-
-    # Diagnose #1: Wo wird das Skript ausgeführt?
-    print(f"➡️  Aktuelles Arbeitsverzeichnis: {os.getcwd()}")
-    
-    output_dir = "./ergebnisse"
-    base_log_dir = "logs"
-    
-    # (Der Rest der Konfiguration bleibt gleich)
-    # ... (Code für Konfliktlösung, Abfrage zum Überschreiben, etc.)
-    if os.path.isfile(base_log_dir):
-        backup_name = f"logs_als_datei_gesichert_{int(time.time())}.txt"
-        print(f"⚠️  Warnung: Eine Datei namens '{base_log_dir}' blockiert die Erstellung des Log-Verzeichnisses.")
-        print(f"✅ Die Datei wird sicher umbenannt in '{backup_name}'.")
-        os.rename(base_log_dir, backup_name)
-
-    overwrite_output = False
-    if os.path.isdir(output_dir) and os.listdir(output_dir):
-        print(f"⚠️  Es sind bereits Daten im Ausgabeverzeichnis '{output_dir}' vorhanden.")
-
-        while True:
-            choice = input("Möchten Sie die vorhandenen Ergebnisse überschreiben? (j/n): ").lower()
-            if choice in ['j', 'ja']:
-                overwrite_output = True
-                print("✅ Vorhandene Daten werden überschrieben.")
-                break
-            elif choice in ['n', 'nein']:
-                print("❌ Vorgang vom Benutzer abgebrochen.")
-                sys.exit()
-            else:
-                print("Ungültige Eingabe. Bitte 'j' für Ja oder 'n' für Nein eingeben.")
-    else:
-        overwrite_output = False
-
-    # Dynamisches Log-Verzeichnis für diesen Lauf erstellen
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    script_name = os.path.splitext(os.path.basename(__file__))[0]
-    run_log_dir = os.path.join(base_log_dir, f"{timestamp}_{script_name}")
-    print(f"Logs für diesen Durchlauf werden in '{run_log_dir}' gespeichert.")
-
-    # === Schritt 2: Dataset laden ===
-    print("Lade das Dataset...")
-    dataset = load_dataset('csv', data_files='trainingsdaten/dataset-tickets-german_normalized_50_5_2.csv')
-
-    # === Schritt 3: Label-Spalte vorbereiten und Anzahl ermitteln ===
-    print("Wandle die 'priority'-Spalte in Klassen-Labels um...")
-    dataset = dataset.class_encode_column("priority")
-    num_unique_labels = dataset['train'].features['priority'].num_classes
-    print(f"✅ {num_unique_labels} einzigartige Labels in der 'priority'-Spalte gefunden.")
-
-    # === Schritt 4: Basis-Modell und Tokenizer laden ===
-    print("Lade das Basis-Modell und den Tokenizer...")
-    modell_name = "./distilbert-local"
-    tokenizer = AutoTokenizer.from_pretrained(modell_name)
-    model = AutoModelForSequenceClassification.from_pretrained(modell_name, num_labels=num_unique_labels)
-
-    # === Schritt 5: Tokenize-Funktion definieren und anwenden ===
-    def tokenize_function(examples):
-        combined_texts = [str(subject) + " " + str(body) for subject, body in
-                          zip(examples["subject"], examples["body"])]
-        return tokenizer(combined_texts, padding="max_length", truncation=True)
-
-    print("Tokenisiere das Dataset...")
-    tokenized_datasets = dataset.map(tokenize_function, batched=True)
-
-    # === Schritt 6: Finale Vorbereitung der Labels für den Trainer ===
-    print("Benenne die 'priority'-Spalte in 'labels' um...")
-    tokenized_datasets = tokenized_datasets.rename_column("priority", "labels")
-    tokenized_datasets = tokenized_datasets.remove_columns(['subject', 'body', 'queue', 'language'])
-
-    # === Schritt 7: Trainings-Argumente definieren ===
-    training_args = TrainingArguments(
-        output_dir=output_dir,
-        eval_strategy="no",
-        num_train_epochs=3,
-        per_device_train_batch_size=8,
-        logging_dir=run_log_dir,
-        overwrite_output_dir=overwrite_output,
-        report_to="none",
-    )
-
-    # === Schritt 8: Trainer initialisieren ===
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=tokenized_datasets["train"],
-    )
-
-    # === Schritt 9: Training starten ===
-    print("Starte das Training...")
-    trainer.train()
-
-    print("\n🎉 Training erfolgreich abgeschlossen! Das Modell wurde im Ordner './ergebnisse' gespeichert.")
-
-
-if __name__ == "__main__":
-    main()
-```
-
-### Zusammenfassung der Änderungen
-
-1.  **`import torch`**: Die Bibliothek wird importiert, um Zugriff auf die GPU-Funktionen zu haben.
-2.  **GPU-Prüfung**: Direkt am Anfang der `main()`-Funktion wird `torch.cuda.is_available()` aufgerufen. Dieser Befehl gibt `True` zurück, wenn eine kompatible GPU gefunden **und** die installierte PyTorch-Version CUDA unterstützt.
-3.  **Informative Ausgabe**: Basierend auf dem Ergebnis der Prüfung gibt das Skript eine klare Statusmeldung aus. So weißt du sofort, ob alles geklappt hat.
-4.  **Keine weiteren Änderungen nötig**: Der `Trainer` ist intelligent genug, sich den Rest selbst zu erschließen. Er wird das Modell und die Daten automatisch auf die GPU verschieben, wenn eine verfügbar ist.
-
-Wenn du die korrekte PyTorch-Version installiert hast und das Skript startest, solltest du die Erfolgsmeldung sehen und die Trainingsgeschwindigkeit wird sich dramatisch von Stunden auf Minuten reduzieren.
