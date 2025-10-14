@@ -1,0 +1,18 @@
+# requirements.txt
+# Mit dieser Datei kann jeder (auch du auf einem anderen System) alle notwendigen Pakete mit einem einzigen Befehl installieren:
+# pip install -r requirements.txt
+
+transformers
+datasets
+torch # oder tensorflow
+jupyterlab # Optional, für die interaktive Entwicklung
+accelerate
+tensorflow
+tf-keras # Da transformers eine Abwärtskompatible Komponente Keras für Funktionalität mit tensorflow benötigt
+
+# Außerdem ditilbert.local von https://huggingface.co/distilbert-base-uncased/tree/main
+# Laden Sie die folgenden Dateien herunter und speichern Sie sie in Ihrem neuen distilbert-local Ordner:
+# config.json
+# model.safetensors
+# tokenizer_config.json
+# vocab.txt

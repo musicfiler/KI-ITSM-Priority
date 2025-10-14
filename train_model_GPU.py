@@ -1,57 +1,10 @@
-# KI-ITSM-Priority
-Machine Learning to analyse ticket priority by first user/customer message
-
-Änderungen für GPU Version:
-Ja, das ist eine sehr wichtige Optimierung. Das Skript kann so angepasst werden, dass es automatisch eine verfügbare GPU nutzt und ansonsten auf die CPU zurückfällt.
-
-Der `transformers.Trainer` ist bereits so konzipiert, dass er eine GPU automatisch erkennt. Das Hauptproblem ist meist nicht der Code, sondern dass die installierte **PyTorch-Version keine GPU-Unterstützung (CUDA) hat.**
-
-Wir passen das Skript so an, dass es uns beim Start klar darüber informiert, welches Gerät es verwendet, und ich erkläre dir, wie du die richtige Umgebung dafür schaffst.
-
------
-
-## Schritt 1: Die richtige PyTorch-Version installieren (Entscheidend)
-
-Damit dein Code eine NVIDIA-GPU nutzen kann, muss PyTorch mit CUDA-Unterstützung installiert sein. Deine aktuelle Konfiguration scheint eine reine CPU-Version zu sein.
-
-1.  **Bestehende PyTorch-Version deinstallieren:**
-
-    ```bash
-    pip uninstall torch torchvision torchaudio
-    ```
-
-2.  **GPU-Treiber prüfen:** Öffne die Kommandozeile (CMD oder PowerShell) und gib `nvidia-smi` ein. Dieser Befehl zeigt dir deine installierte Treiberversion und die höchste unterstützte CUDA-Version an.
-
-3.  **Korrekten Installationsbefehl generieren:**
-    Gehe auf die offizielle PyTorch-Webseite: [https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
-    Wähle dort die passenden Optionen für dein System aus (z.B. Stable, Windows, Pip, CUDA 12.1). Die Webseite generiert dir dann den korrekten Installationsbefehl.
-
-    Für eine typische Windows-Installation mit einer neueren NVIDIA-Karte lautet der Befehl oft so:
-
-    ```bash
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-    oder wie in diesem Fall bei einer NVIDIA 4070:
-    pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
-    ```
-
-    **Wichtig:** Verwende den Befehl, der für **deine CUDA-Version** von der Webseite generiert wird.
-
------
-
-## Schritt 2: Skript anpassen für informative Ausgabe
-
-Jetzt fügen wir dem Skript eine Prüfung hinzu. So siehst du bei jedem Start sofort, ob die GPU-Erkennung erfolgreich war. Der `Trainer` selbst benötigt keine weiteren Änderungen.
-
-### Vollständiges, angepasstes Skript
-
-```python
 # train_model.py
 
 # Erforderliche Bibliotheken importieren
 import os
 import sys
 import time
-import torch # Hinzugefügt, um die GPU-Verfügbarkeit zu prüfen
+import torch  # Hinzugefügt, um die GPU-Verfügbarkeit zu prüfen
 from datetime import datetime
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, Trainer
 from datasets import load_dataset
@@ -70,20 +23,21 @@ def main():
     print("Starte den Trainingsprozess...")
 
     # === Schritt 1: Konfiguration, Diagnose und Geräte-Prüfung ===
-    
+
     # --- NEU: GPU-Verfügbarkeit prüfen ---
     if torch.cuda.is_available():
         print("✅ GPU gefunden! Das Training wird auf der GPU ausgeführt. 🚀")
     else:
-        print("⚠️ Keine GPU gefunden oder PyTorch ist nicht für GPU konfiguriert. Das Training wird auf der CPU ausgeführt (deutlich langsamer).")
+        print(
+            "⚠️ Keine GPU gefunden oder PyTorch ist nicht für GPU konfiguriert. Das Training wird auf der CPU ausgeführt (deutlich langsamer).")
     # --------------------------------------------------------
 
     # Diagnose #1: Wo wird das Skript ausgeführt?
     print(f"➡️  Aktuelles Arbeitsverzeichnis: {os.getcwd()}")
-    
+
     output_dir = "./ergebnisse"
     base_log_dir = "logs"
-    
+
     # (Der Rest der Konfiguration bleibt gleich)
     # ... (Code für Konfliktlösung, Abfrage zum Überschreiben, etc.)
     if os.path.isfile(base_log_dir):
@@ -173,13 +127,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
-
-### Zusammenfassung der Änderungen
-
-1.  **`import torch`**: Die Bibliothek wird importiert, um Zugriff auf die GPU-Funktionen zu haben.
-2.  **GPU-Prüfung**: Direkt am Anfang der `main()`-Funktion wird `torch.cuda.is_available()` aufgerufen. Dieser Befehl gibt `True` zurück, wenn eine kompatible GPU gefunden **und** die installierte PyTorch-Version CUDA unterstützt.
-3.  **Informative Ausgabe**: Basierend auf dem Ergebnis der Prüfung gibt das Skript eine klare Statusmeldung aus. So weißt du sofort, ob alles geklappt hat.
-4.  **Keine weiteren Änderungen nötig**: Der `Trainer` ist intelligent genug, sich den Rest selbst zu erschließen. Er wird das Modell und die Daten automatisch auf die GPU verschieben, wenn eine verfügbar ist.
-
-Wenn du die korrekte PyTorch-Version installiert hast und das Skript startest, solltest du die Erfolgsmeldung sehen und die Trainingsgeschwindigkeit wird sich dramatisch von Stunden auf Minuten reduzieren.
