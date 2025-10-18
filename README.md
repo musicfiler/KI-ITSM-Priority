@@ -1,6 +1,7 @@
 # KI-ITSM-Priority
 
 Ein Machine-Learning-Projekt zur automatischen Analyse und Priorisierung von ITSM-Tickets basierend auf der initialen Nachricht des Kunden.
+Requires Python 3.13 !!
 
 ## Projektziel
 
