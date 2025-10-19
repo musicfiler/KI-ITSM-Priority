@@ -103,3 +103,8 @@ Der `transformers.Trainer` erkennt eine GPU automatisch. Das Hauptproblem ist of
     ```bash
     pip install torch torchvision torchaudio --index-url [https://download.pytorch.org/whl/cu121](https://download.pytorch.org/whl/cu121)
     ```
+
+## Wichtiger Hinweis für die Verwendung der Ollama Trainigsdaten ergänzung ##
+
+Hierfür ist eine lokale installation von Ollama erforderlich.
+Es ist zu empfehlen das verwendete Modell für GPU zu optimieren, damit die Berechnungen nicht ewig dauern.
