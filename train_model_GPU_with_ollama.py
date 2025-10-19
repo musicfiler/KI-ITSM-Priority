@@ -1,4 +1,4 @@
-# train_model.py
+# train_model.py  _ Kommentar
 
 # Erforderliche Bibliotheken importieren
 import os
