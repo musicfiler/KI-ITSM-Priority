@@ -2,5 +2,6 @@
 /trainingsdaten
 /distilbert-local
 /log
+/.venv
 JupyterProject.iml
 misc.xml
