@@ -267,8 +267,8 @@ def main():
     # --- MODIFIZIERTER START: Logging wird zuerst konfiguriert ---
 
     # 1. Log-Verzeichnisse und Dateinamen definieren
-    base_log_dir = "logs_multilingual_stratified"
-    output_dir = "./ergebnisse_multilingual_stratified"
+    base_log_dir = "logs_multilingual_stratified_512" # da die kontextgröße max_tokensize erhöht wurde um auch große Tickets zu erfassen
+    output_dir = "./ergebnisse_multilingual_stratified_512"
 
     # 1a. Blockier-Check
     if os.path.isfile(base_log_dir):
@@ -421,7 +421,7 @@ def main():
                 for text in raw_texts
             ]
 
-            return tokenizer(enriched_texts, padding="max_length", truncation=True, max_length=256)
+            return tokenizer(enriched_texts, padding="max_length", truncation=True, max_length=512) # länge von 256 auf 512 erhöht um auch lange Tickets erfassen zu können.
 
         print("Starte Anreicherung und Tokenisierung des Datasets...")
         tokenized_datasets = dataset.map(tokenize_and_enrich_function, batched=True)
