@@ -56,7 +56,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--nllb_model_repo", type=str, default=DEFAULT_NLLB_REPO,
                         help="Name des NLLB-Modell-Repositorys.")
     parser.add_argument("--batch_size", type=int, default=None,
-                        help="Batch-Größe. (Standard: 32 für Helsinki, 4 für NLLB).")
+                        help="Batch-Größe. (Standard: 10 für Helsinki, 4 für NLLB).")
     parser.add_argument("--checkpoint_interval", type=int, default=50,
                         help="Checkpoint-Intervall (alle X Zeilen speichern).")
     parser.add_argument("--pre_processing", type=str, default="isolate", choices=["none", "clean", "isolate"],
@@ -137,7 +137,7 @@ def get_user_config() -> Optional[Dict]:
 
     # 8. Batch-Verarbeitung
     if config["model_family"] == "helsinki":
-        default_batch_size = 32
+        default_batch_size = 10
         batch_prompt = f"Batch-Größe (Helsinki optimiert) [Standard: {default_batch_size}]: "
     else:  # nllb
         default_batch_size = 4
@@ -179,7 +179,7 @@ def setup_config() -> Optional[Dict]:
         config["target_language_helsinki"] = REVERSE_LANG_MAP.get(config["target_language_nllb"])
 
         if config["batch_size"] is None:
-            config["batch_size"] = 32 if config["model_family"] == "helsinki" else 4
+            config["batch_size"] = 10 if config["model_family"] == "helsinki" else 4
 
         print(f"Eingabedatei: {config['input_file']}")
         print(f"Modell-Familie: {config['model_family']}")
