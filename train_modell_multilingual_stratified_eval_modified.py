@@ -327,18 +327,27 @@ class CheckpointMetadataCallback(TrainerCallback):
 
 
 # ==============================================================================
-# Bereinigungsfunktion (unverändert)
+# Bereinigungsfunktion (KORRIGIERT)
 # ==============================================================================
 def cleanup_checkpoints(output_dir: str, best_model_path: str, save_limit: int = None):
-    print(f"\n--- Starte Bereinigung der Checkpoints in '{output_dir}' ---")
+    # HINWEIS: Diese Funktion wird jetzt nur noch für Strategie 2 und 3 aufgerufen,
+    # bei denen save_limit=None ist. Strategie 1 (save_limit=2) nutzt die
+    # eingebaute Bereinigung des Trainers.
+
+    print(f"\n--- Starte manuelle Bereinigung der Checkpoints in '{output_dir}' ---")
     best_checkpoint_name = None
-    if save_limit is None:
-        if best_model_path:
+
+    if save_limit is None:  # Sollte immer True sein, wenn diese Funktion aufgerufen wird
+        if best_model_path and os.path.isdir(best_model_path):
             best_checkpoint_name = os.path.basename(best_model_path.rstrip(os.sep))
             print(f"Das beste Modell ist in: '{best_checkpoint_name}'. Dieser Ordner wird behalten.")
         else:
-            print("❌ FEHLER: 'best_model_path' ist None. Breche Bereinigung ab, um Datenverlust zu verhindern.")
+            print(f"❌ FEHLER: 'best_model_path' ('{best_model_path}') ist ungültig. Breche Bereinigung ab.")
             return
+    else:
+        # Dieser Fall sollte nicht mehr eintreten, aber als Sicherheitsnetz
+        print("WARNUNG: cleanup_checkpoints wurde mit save_limit != None aufgerufen. Der Trainer sollte dies tun.")
+        return
 
     checkpoint_dirs = glob.glob(os.path.join(output_dir, "checkpoint-*"))
     if not checkpoint_dirs:
@@ -348,22 +357,37 @@ def cleanup_checkpoints(output_dir: str, best_model_path: str, save_limit: int =
     print(f"Gefunden: {len(checkpoint_dirs)} Checkpoint-Ordner. Beginne Löschvorgang...")
     deleted_count = 0
     kept_count = 0
+
+    # KORREKTUR: Robusteres Löschen mit mehr Wiederholungen bei [WinError 5]
     for folder_path in checkpoint_dirs:
         folder_name = os.path.basename(folder_path)
         if folder_name == best_checkpoint_name:
             print(f"  ✅ '{folder_name}' wird BEHALTEN.")
             kept_count += 1
             continue
+
         if os.path.isdir(folder_path):
-            try:
-                shutil.rmtree(folder_path)
-                print(f"  🗑️  '{folder_name}' gelöscht.")
-                deleted_count += 1
-            except FileNotFoundError:
-                print(f"  ℹ️  '{folder_name}' wurde bereits an anderer Stelle gelöscht.")
-            except OSError as e:
-                print(f"  ❌ FEHLER beim Löschen von '{folder_name}': {e}")
+            attempts = 3
+            for i in range(attempts):
+                try:
+                    shutil.rmtree(folder_path)
+                    print(f"  🗑️  '{folder_name}' gelöscht.")
+                    deleted_count += 1
+                    break  # Erfolg, nächste Schleife
+                except FileNotFoundError:
+                    print(f"  ℹ️  '{folder_name}' wurde bereits an anderer Stelle gelöscht.")
+                    break  # Erfolg, nächste Schleife
+                except OSError as e:
+                    print(f"  ❌ FEHLER (Versuch {i + 1}/{attempts}) beim Löschen von '{folder_name}': {e}")
+                    if i < attempts - 1:
+                        print(f"     ... warte 2 Sekunden und versuche es erneut ...")
+                        time.sleep(2)  # Warte, falls das System die Datei noch sperrt
+                    else:
+                        print(f"     ... konnte '{folder_name}' nach {attempts} Versuchen nicht löschen.")
+
     print(f"--- Bereinigung abgeschlossen. {deleted_count} Ordner entfernt, {kept_count} behalten. ---")
+
+    # Finaler Sweep (unverändert, ist meist unproblematisch)
     print("Starte finalen Sweep für leere Checkpoint-Ordner...")
     try:
         remaining_checkpoint_dirs = glob.glob(os.path.join(output_dir, "checkpoint-*"))
@@ -434,7 +458,6 @@ def select_training_strategy():
             print("✅ Optimierte Strategie gewählt.")
             print("--- Passe Early Stopping an ---")
 
-            # --- NEU: Patience abfragen (Default 4) ---
             default_patience = 4
             patience_val = default_patience
             while True:
@@ -452,7 +475,6 @@ def select_training_strategy():
                 except ValueError:
                     print("  Ungültige Eingabe. Bitte eine ganze Zahl eingeben.")
 
-            # --- NEU: Threshold abfragen (Default 0.0) ---
             default_threshold = 0.0
             threshold_val = default_threshold
             while True:
@@ -475,17 +497,14 @@ def select_training_strategy():
                 except ValueError:
                     print("  Ungültige Eingabe. Bitte eine Fließkommazahl eingeben.")
 
-            # (strategy_id, save_limit, patience, threshold)
             return 1, 2, patience_val, threshold_val
 
         elif choice == "2":
             print("✅ Vollständige (Progressive) Strategie gewählt.")
-            # (strategy_id, save_limit, patience, threshold)
             return 2, None, None, 0.0
 
         elif choice == "3":
             print("✅ Rewind and Retry (Experimentell) Strategie gewählt.")
-            # (strategy_id, save_limit, patience, threshold)
             return 3, None, None, 0.0
 
         else:
@@ -589,7 +608,6 @@ def select_evaluation_strategy(priority_order_list):
             print("Ungültige Eingabe. Bitte '1', '2', '3', '4' oder '5' wählen.")
 
 
-# --- NEU: Funktion zur Auswahl der Batch-Größen ---
 def select_batch_sizes():
     """Frägt den Benutzer nach den Batch-Größen."""
     print("\n" + "=" * 70)
@@ -703,7 +721,7 @@ def create_manual_split(full_dataset: Dataset, label_column: str, split_counts: 
     return train_ds, eval_ds
 
 
-# --- NEU: Funktion zur Analyse der Token-Länge ---
+# --- MODIFIZIERT: Funktion zur Analyse und interaktiven Auswahl der Token-Länge ---
 def calculate_dynamic_max_length(
         train_dataset: Dataset,
         tokenizer: PreTrainedTokenizer,
@@ -714,8 +732,8 @@ def calculate_dynamic_max_length(
         sla_vocab: list
 ) -> int:
     """
-    Analysiert das Trainingsset, um eine VRAM-optimierte max_length zu finden.
-    Verwendet die 95%-Perzentil-Länge, um Ausreißer zu ignorieren.
+    Analysiert das Trainingsset, um eine VRAM-optimierte max_length zu finden,
+    und lässt den Benutzer diese Einstellung bestätigen oder anpassen.
     """
     print("\n" + "=" * 70)
     print("--- 6a. Analysiere Token-Längen für VRAM-Optimierung ---")
@@ -738,50 +756,89 @@ def calculate_dynamic_max_length(
         return {"token_length": [len(x) for x in tokenized_inputs["input_ids"]]}
 
     print("Analysiere Längen im Trainings-Set (kann einen Moment dauern)...")
+
+    all_lengths_np = None
     try:
         dataset_with_lengths = train_dataset.map(get_token_length, batched=True)
         all_lengths_np = np.array(dataset_with_lengths['token_length'])
-
-        max_len = int(all_lengths_np.max())
-        p95_len = int(np.percentile(all_lengths_np, 95))
-        avg_len = int(all_lengths_np.mean())
-
-        model_max = tokenizer.model_max_length
-
-        print(f"  Statistiken (aus {len(all_lengths_np)} Tickets):")
-        print(f"    - Längstes Ticket:      {max_len} Tokens")
-        print(f"    - 95%-Perzentil:        {p95_len} Tokens")
-        print(f"    - Durchschnitt:         {avg_len} Tokens")
-        print(f"    - Modell-Limit:         {model_max} Tokens")
-
-        target_len = p95_len
-
-        if target_len % 64 != 0:
-            dynamic_length = int(math.ceil(target_len / 64.0)) * 64
-        else:
-            dynamic_length = target_len
-
-        final_max_length = min(dynamic_length, model_max)
-
-        if p95_len > model_max:
-            print(f"  -> WARNUNG: 95% der Tickets ({p95_len}) sind LÄNGER als das Modell-Limit ({model_max}).")
-            print(f"  -> 'max_length' wird auf {model_max} gesetzt (starkes Truncating).")
-            final_max_length = model_max
-        elif dynamic_length > model_max:
-            print(f"  -> 95%-Perzentil ({p95_len}) auf {dynamic_length} aufgerundet.")
-            print(f"  -> 'max_length' wird auf {model_max} begrenzt.")
-            final_max_length = model_max
-        else:
-            print(f"  -> 95%-Perzentil ({p95_len}) auf {dynamic_length} aufgerundet.")
-            print(f"  -> Finale 'max_length' wird auf {final_max_length} gesetzt (Limit: {model_max}).")
-
-        return final_max_length
-
     except Exception as e:
         print(f"❌ FEHLER bei der Token-Analyse: {e}.")
         print(f"   -> Verwende Standard max_length von 512.")
         import traceback
         traceback.print_exc()
+        return 512
+
+    if all_lengths_np is None or len(all_lengths_np) == 0:
+        print("❌ FEHLER: Keine Token-Längen gefunden. Verwende Standard 512.")
+        return 512
+
+    # Metriken berechnen
+    try:
+        total_tickets = len(all_lengths_np)
+        max_len = int(all_lengths_np.max())
+        p95_len = int(np.percentile(all_lengths_np, 95))
+        avg_len = int(all_lengths_np.mean())
+        model_max = tokenizer.model_max_length  # (z.B. 512 für DistilBERT)
+
+        print(f"  Statistiken (aus {total_tickets} Tickets):")
+        print(f"    - Längstes Ticket:      {max_len} Tokens")
+        print(f"    - 95%-Perzentil:        {p95_len} Tokens")
+        print(f"    - Durchschnitt:         {avg_len} Tokens")
+        print(f"    - Modell-Limit:         {model_max} Tokens")
+
+        # Empfehlung berechnen (95%-Perzentil, auf 64 aufgerundet, max. 512)
+        target_len = p95_len
+        if target_len % 64 != 0:
+            recommended_length = int(math.ceil(target_len / 64.0)) * 64
+        else:
+            recommended_length = target_len
+
+        recommended_length = min(recommended_length, model_max)
+
+        # Interaktive Schleife
+        while True:
+            print("\n--- Empfehlung für 'max_length' ---")
+            print(
+                f"Basierend auf dem 95%-Perzentil ({p95_len}) wird eine 'max_length' von **{recommended_length}** empfohlen.")
+
+            # Berechne Ausreißer basierend auf der Empfehlung
+            outliers = np.sum(all_lengths_np > recommended_length)
+            outlier_percent = (outliers / total_tickets) * 100
+            print(
+                f" -> Bei {recommended_length} Tokens werden {outliers} Tickets ({outlier_percent:.2f}%) abgeschnitten (truncated).")
+            print(f"    (Das Modell 'sieht' bei diesen Tickets nur die ersten {recommended_length} Tokens.)")
+
+            user_input = input(f"\nFinale 'max_length' bestätigen [{recommended_length}]: ").strip()
+
+            if not user_input:
+                final_chosen_length = recommended_length
+                print(f"✅ Empfehlung ({final_chosen_length}) übernommen.")
+                break
+
+            try:
+                final_chosen_length = int(user_input)
+                if final_chosen_length <= 0:
+                    print("  Bitte eine positive Zahl eingeben.")
+                elif final_chosen_length > model_max:
+                    print(f"  WARNUNG: Eingabe ({final_chosen_length}) ist größer als das Modell-Limit ({model_max}).")
+                    print(f"  Wert wird auf {model_max} begrenzt.")
+                    final_chosen_length = model_max
+                    break
+                else:
+                    # Zeige die Konsequenz der manuellen Wahl
+                    final_outliers = np.sum(all_lengths_np > final_chosen_length)
+                    final_percent = (final_outliers / total_tickets) * 100
+                    print(f"  -> Manuell auf {final_chosen_length} gesetzt.")
+                    print(f"     {final_outliers} Tickets ({final_percent:.2f}%) werden nun abgeschnitten.")
+                    break
+            except ValueError:
+                print("  Ungültige Eingabe. Bitte eine ganze Zahl eingeben.")
+
+        return final_chosen_length
+
+    except Exception as e:
+        print(f"❌ FEHLER bei der Metrik-Berechnung: {e}.")
+        print(f"   -> Verwende Standard max_length von 512.")
         return 512
 
 
@@ -818,18 +875,16 @@ def save_config_summary(filepath: str, config_data: dict):
 
             f.write("\n--- 3. Evaluierungs-Split ---\n")
             f.write(f"Modus: {config_data.pop('eval_mode', 'N/A')}\n")
-            f.write(f"Wert: {config_data.pop('eval_value', 'N/A')}\n")
+            f.write(f"Wert: {str(config_data.pop('eval_value', 'N/A'))}\n")  # str() für Dicts
 
             f.write("\n--- 4. VRAM / Batch-Parameter ---\n")
             f.write(f"Trainings-Batch-Größe: {config_data.pop('train_batch_size', 'N/A')}\n")
             f.write(f"Evaluierungs-Batch-Größe: {config_data.pop('eval_batch_size', 'N/A')}\n")
-            f.write(f"Dynamische max_length (berechnet): {config_data.pop('dynamic_max_len', 'N/A')}\n")
+            f.write(f"Dynamische max_length (gewählt): {config_data.pop('dynamic_max_len', 'N/A')}\n")
 
-            # Restliche (unerwartete) Einträge
             if config_data:
                 f.write("\n--- 5. Weitere Parameter ---\n")
                 for key, val in config_data.items():
-                    # Ignoriere diese, da sie schon oben sind
                     if key not in ['strategy_patience', 'strategy_threshold']:
                         f.write(f"{key}: {val}\n")
 
@@ -1027,13 +1082,13 @@ def main():
         model.resize_token_embeddings(len(tokenizer))
         print("✅ Tokenizer und Modell um neue Signal-Tokens erweitert.")
 
-        # === 6a. Dynamische max_length berechnen ===
+        # === 6a. Dynamische max_length berechnen (INTERAKTIV) ===
         dynamic_max_len = calculate_dynamic_max_length(
             dataset['train'], tokenizer, field_subject, field_body,
             neg_vocab, pos_vocab, sla_vocab
         )
 
-        # === NEU: 6b. Konfiguration speichern ===
+        # === 6b. Konfiguration speichern ===
         config_to_save = {
             "start_timestamp": timestamp_log,
             "log_file": console_log_path,
@@ -1189,11 +1244,27 @@ def main():
         tokenizer.save_pretrained(output_dir)
         print(f"\n🎉 Training erfolgreich abgeschlossen! Das beste Modell wurde im Ordner '{output_dir}' gespeichert.")
 
-        # === SCHRITT 13: Redundante Checkpoints bereinigen (unverändert) ===
+        # ==================================================================
+        # === SCHRITT 13: Redundante Checkpoints bereinigen (KORRIGIERT) ===
+        # ==================================================================
         best_model_path = trainer.state.best_model_checkpoint
         if best_model_path is None and train_result is not None:
             best_model_path = train_result.best_model_checkpoint  # Fallback
-        cleanup_checkpoints(output_dir, best_model_path, strategy_save_limit)
+
+        # --- KORREKTUR: Cleanup nur für Strategie 2 & 3 ---
+        if strategy_id == 1:
+            print("\n--- Checkpoint-Bereinigung (Strategie 1) ---")
+            print(f"Trainer hat 'save_total_limit={strategy_save_limit}' genutzt und automatisch bereinigt.")
+            print("Keine manuelle Bereinigung notwendig.")
+            if best_model_path:
+                print(f"Bestes Modell (geladen): {os.path.basename(best_model_path)}")
+            else:
+                print("WARNUNG: Konnte das beste Modell nicht identifizieren (Trainer-State).")
+        else:
+            # Nur für Strategie 2 und 3, wo save_total_limit=None war
+            print("\n--- Checkpoint-Bereinigung (Strategie 2/3) ---")
+            cleanup_checkpoints(output_dir, best_model_path, strategy_save_limit)
+
 
     except Exception as e:
         print(f"❌ EIN SCHWERWIEGENDER FEHLER IST AUFGETRETEN:")
