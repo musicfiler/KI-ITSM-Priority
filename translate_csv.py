@@ -228,10 +228,9 @@ def load_helsinki_model_and_tokenizer(src_code: str, tgt_code: str, device: str)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         model_args = {}
 
-        # <<< (V15-Optimierung): FP16 für Helsinki auf CUDA aktiviert >>>
+        # (V17): FP16 (verursachte 'cudaErrorUnknown') bleibt deaktiviert.
         if device == "cuda":
-            print("GPU (CUDA) erkannt. Lade Helsinki-Modell in halber Genauigkeit (fp16)...")
-            model_args["dtype"] = torch.float16
+            print("GPU (CUDA) erkannt. Lade Helsinki-Modell in voller Genauigkeit (fp32)...")
 
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name, **model_args)
         if device == "cuda":
@@ -253,7 +252,8 @@ def translate_batch(
         device: str,
         model_family: str,
         src_lang_nllb: Optional[str] = None,
-        tgt_lang_id: Optional[int] = None
+        tgt_lang_id: Optional[int] = None,
+        dynamic_max_output: int = 512  # <<< NEU (V18): Nimmt dynamische Länge entgegen
 ) -> List[str]:
     """Übersetzt einen Batch von Texten (generisch für NLLB oder Helsinki)."""
     inputs = None
@@ -266,18 +266,17 @@ def translate_batch(
             else:
                 tokenizer.src_lang = src_lang_nllb
 
-        # <<< GEÄNDERT (V16): Umstellung auf Dynamic Padding (padding="longest") >>>
-        # Dies ist die wichtigste VRAM-Optimierung.
+        # (V16-Optimierung: Dynamic Padding)
         inputs = tokenizer(
             texts,
             return_tensors="pt",
-            padding="longest",  # Füllt nur bis zum längsten Element im Batch, nicht bis max_length
-            truncation=True,  # Kürzt Sätze, die länger als max_length sind
-            max_length=512  # Maximale Input-Länge
+            padding="longest",  # Füllt nur bis zum längsten Element im Batch
+            truncation=True,  # Kürzt Sätze, die länger als 512 sind
+            max_length=512  # Maximale *Input*-Länge (Sicherheitsnetz)
         ).to(device)
 
-        # Output-Länge (512) bleibt als VRAM-Sparmaßnahme (war 1024)
-        gen_kwargs = {"max_length": 512}
+        # <<< GEÄNDERT (V18): Verwendet die berechnete dynamische Output-Länge >>>
+        gen_kwargs = {"max_length": dynamic_max_output}
 
         if model_family == "nllb":
             if tgt_lang_id is None:
@@ -297,7 +296,12 @@ def translate_batch(
     except Exception as e:
         if "CUDA" in str(e) and "out of memory" in str(e).lower():
             print(f"\n!!! FATALER CUDA-FEHLER (Out of Memory): {e} !!!")
-            print("!!! Dynamisches Padding war nicht ausreichend. Bitte Batch-Größe weiter reduzieren. !!!\n")
+            print(
+                f"!!! VRAM voll trotz dyn. Output-Länge ({dynamic_max_output}). Bitte Batch-Größe weiter reduzieren. !!!\n")
+            raise e
+        elif "CUDA" in str(e):
+            print(f"\n!!! FATALER CUDA-FEHLER (Instabilität): {e} !!!")
+            print("!!! Dies ist oft ein Treiber- oder Hardware-Problem. Skript wird gestoppt. !!!\n")
             raise e
         else:
             print(f"Fehler bei der Übersetzung eines Batches: {e}")
@@ -357,21 +361,22 @@ def find_first_non_empty_example(df: pd.DataFrame, columns: List[str]) -> (Optio
     return None, ""
 
 
-# <<< NEU (V16): Metrik-Funktion (Ihre Anfrage) >>>
-def show_token_metrics(df: pd.DataFrame, config: dict):
+# <<< GEÄNDERT (V18): Funktion gibt jetzt die maximale Token-Länge zurück >>>
+def show_token_metrics(df: pd.DataFrame, config: dict) -> int:
     """
     Analysiert die Token-Längen der zu übersetzenden Spalten und gibt Metriken aus.
+    Gibt die maximal gefundene Token-Länge zurück.
     """
-    print("\n--- 7a. Analysiere Token-Metriken (Vorschau) ---")
+    print("\n--- 7b. Analysiere Token-Metriken (Vorschau) ---")
 
-    # Lade einen Beispiel-Tokenizer, um die Längen zu schätzen
-    # Dies ist eine Annäherung; der Tokenizer für jede Sprache kann leicht abweichen.
+    # Standard-Rückgabewert (Fallback)
+    default_max_len = 512
+
     try:
         tokenizer_name = ""
         if config["model_family"] == "nllb":
             tokenizer_name = config["nllb_model_repo"]
         else:
-            # Verwende die Standard-Quell/Zielsprache als Schätzung
             src = config["default_src_lang"]
             tgt = config["target_language_helsinki"]
             if not tgt:
@@ -383,7 +388,7 @@ def show_token_metrics(df: pd.DataFrame, config: dict):
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     except Exception as e:
         print(f"Fehler beim Laden des Metrik-Tokenizers: {e}. Überspringe Metriken.")
-        return
+        return default_max_len
 
     all_lengths = pd.Series(dtype='int64')
     longest_text_overall = ""
@@ -393,22 +398,19 @@ def show_token_metrics(df: pd.DataFrame, config: dict):
         if col_name in df.columns:
             print(f"Analysiere Spalte '{col_name}'...")
 
-            # (tqdm für Pandas hier nicht nötig, da apply schnell ist)
             lengths = df[col_name].astype(str).apply(
                 lambda x: len(tokenizer.encode(x, max_length=4096, truncation=True)))
 
-            # Längsten Text in *dieser* Spalte finden
             max_len_col = lengths.max()
             if max_len_col > longest_len_overall:
                 longest_len_overall = max_len_col
-                # Finde den Text, der dieser Länge entspricht
                 longest_text_overall = df.loc[lengths.idxmax()][col_name]
 
             all_lengths = pd.concat([all_lengths, lengths])
 
     if all_lengths.empty:
         print("Keine Daten zum Analysieren gefunden.")
-        return
+        return default_max_len
 
     print("\n--- Token-Metriken (nach Pre-Processing) ---")
     print(f"  Durchschnittl. Token-Anzahl: {all_lengths.mean():.0f}")
@@ -418,6 +420,12 @@ def show_token_metrics(df: pd.DataFrame, config: dict):
     print(f"Der längste Text (gekürzt auf 500 Zeichen) hat {longest_len_overall} Tokens:")
     print(longest_text_overall[:500] + "..." if len(longest_text_overall) > 500 else longest_text_overall)
     print("=" * 80)
+
+    max_val = all_lengths.max()
+    if pd.isna(max_val) or max_val == 0:
+        return default_max_len
+
+    return int(max_val)
 
 
 # --- Hauptlogik ---
@@ -533,8 +541,10 @@ def main():
 
         # 5. CSV laden ODER Checkpoint wiederaufnehmen
         print(f"\n--- 5. Lade Daten für Übersetzung ---")
+
+        resume_input = 'f'  # Standard ist 'fortsetzen'
+
         if os.path.exists(config['output_file']):
-            resume_input = 'f'
             if len(sys.argv) <= 1:
                 resume_input = input(
                     f"Zieldatei '{config['output_file']}' existiert.\nFortsetzen (f) oder Überschreiben (ü)? [f]: ").lower().strip()
@@ -548,6 +558,7 @@ def main():
         else:
             print(f"\nLese CSV-Datei: {os.path.basename(input_for_translation)}")
             df = pd.read_csv(input_for_translation)
+            resume_input = 'ü'  # Wenn die Datei nicht existiert, ist es quasi ein "Überschreiben"
 
         # 6. Spalten validieren
         print("\n--- 6. Validiere Spalten ---")
@@ -572,8 +583,44 @@ def main():
         df['temp_src_lang_nllb'] = df['temp_src_lang_2code'].apply(map_lang_code)
         print("-> ✅ Sprachspalten und NaN-Werte vorbereitet.")
 
-        # <<< NEU (V16): Metrik-Analyse wird hier ausgeführt >>>
-        show_token_metrics(df, config)
+        # <<< GEÄNDERT (V17): Fehler-Strings für Neuübersetzung zurücksetzen >>>
+        if resume_input != 'ü':  # Nur ausführen, wenn wir *nicht* überschreiben
+            print("\n--- 7a. Bereinige [FEHLER]-Strings für 'Fortsetzen'-Modus ---")
+            replaced_count = 0
+            for col_name in config["columns_to_translate"]:
+                target_col_name = f"translated_{col_name}"
+                if target_col_name in df.columns:
+                    # Finde alle Zeilen, die mit '[' beginnen
+                    error_mask = df[target_col_name].astype(str).str.startswith("[", na=False)
+                    count = error_mask.sum()
+                    if count > 0:
+                        replaced_count += count
+                        df.loc[error_mask, target_col_name] = pd.NA
+            if replaced_count > 0:
+                print(f"-> {replaced_count} [FEHLER]-Einträge gefunden und für Neuübersetzung zurückgesetzt.")
+            else:
+                print("-> Keine [FEHLER]-Einträge gefunden. Setze normal fort.")
+
+        # <<< NEU (V18): Metrik-Analyse und dynamische Längenberechnung >>>
+        max_input_length_metric = show_token_metrics(df, config)
+
+        print("\n--- 7c. Justiere VRAM-Parameter (Dynamische Generierungslänge) ---")
+        MIN_OUTPUT_LEN = 128  # Minimaler Puffer
+        MAX_OUTPUT_LEN = 512  # Hartes Limit des Modells
+        SUGGESTED_MULTIPLIER = 1.5  # Puffer für Übersetzung (z.B. DE->EN)
+
+        suggested_output_len = int(max_input_length_metric * SUGGESTED_MULTIPLIER)
+
+        # Clamp-Funktion: Stelle sicher, dass es zwischen MIN und MAX liegt
+        dynamic_output_length = max(MIN_OUTPUT_LEN, min(suggested_output_len, MAX_OUTPUT_LEN))
+
+        # Speichere es in der config, um es an translate_batch zu übergeben
+        config['dynamic_max_output'] = dynamic_output_length
+
+        print(f"-> Maximale Input-Token (Metrik): {max_input_length_metric}")
+        print(f"-> Berechnete Output-Länge (Input * {SUGGESTED_MULTIPLIER}): {suggested_output_len}")
+        print(
+            f"-> VRAM-Optimierung: Maximale Generierungslänge auf {dynamic_output_length} Tokens gesetzt (Limit: {MIN_OUTPUT_LEN}-{MAX_OUTPUT_LEN}).")
 
         # 8. Äußere Schleife für jede zu übersetzende Spalte
         for col_name in config["columns_to_translate"]:
@@ -587,6 +634,7 @@ def main():
 
             grouped = df.groupby('temp_src_lang_2code')
             total_rows = len(df)
+
             processed_rows_count = df[target_col_name].notna().sum()
 
             print(f"\n--- Starte Übersetzung für '{col_name}' ---")
@@ -696,7 +744,8 @@ def main():
                         device,
                         config["model_family"],
                         src_lang_nllb=src_nllb_code,
-                        tgt_lang_id=nllb_tgt_id
+                        tgt_lang_id=nllb_tgt_id,
+                        dynamic_max_output=config['dynamic_max_output']  # <<< NEU (V18)
                     )
 
                     df.loc[non_empty_indices, target_col_name] = translated_batch
