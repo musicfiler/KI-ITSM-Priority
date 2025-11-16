@@ -23,3 +23,10 @@ jupyterlab # Optional, für die Entwicklung in Jupyter Notebooks
 tensorflow # Optional, falls TensorBoard-Logging wieder aktiviert wird
 tf-keras   # Optional, wird als Abhängigkeit von tensorflow benötigt
 # kaggle # Optional wird benötigt um die Trainingsdatensätze von kaggle herunterzuladenfalls ein API schlüssel vorhanden ist
+
+# Erforderlich für die Übersetzungskomponente:
+pandas
+torch
+transformers
+tqdm
+sentencepiece
