@@ -1,4 +1,4 @@
-# chat_with_modell.py (Modular / Multi-Modell / Bugfix)
+# chat_with_modell.py (Modular / Multi-Modell / Validierung V2 / Batch V1)
 
 import os
 import re
@@ -8,7 +8,8 @@ import pandas as pd
 import numpy as np
 import glob  # Zum Finden von Modell-Ordnern
 import json  # Zum Lesen von config.json und trainer_state.json
-import time  # Für Wartezeit, wenn keine Modelle gefunden werden
+import time  # Für Wartezeit und Matrix-Timestamp
+from datetime import datetime  # NEU: Für Datums-Ordner
 
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
@@ -16,6 +17,7 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
+from tqdm import tqdm  # Für den Fortschrittsbalken
 
 # --- Globale Konfiguration für Vokabulare ---
 BASE_DIR = "trainingsdaten"
@@ -23,18 +25,13 @@ NEG_CSV = os.path.join(BASE_DIR, "neg_arguments_multilingual.csv")
 POS_CSV = os.path.join(BASE_DIR, "pos_arguments_multilingual.csv")
 SLA_CSV = os.path.join(BASE_DIR, "sla_arguments_multilingual.csv")
 
-# Standard-Datei für die "Batch-Prüfung" (KORRIGIERTER PFAD)
 DEFAULT_DATA_FILE = os.path.join(BASE_DIR, "5_prio_stufen/dataset-tickets-german_normalized_50_5_2.csv")
-
-# Die speziellen Tokens (müssen im Vokabular-Preprocessing übereinstimmen)
 NEW_TOKENS = ['KEY_CORE_APP', 'KEY_CRITICAL', 'KEY_REQUEST', 'KEY_NORMAL']
 
-# Die Gewichte für das Preprocessing (aus den Trainings-Skripten)
 SLA_WEIGHT = 5
 NEG_WEIGHT = 4
 POS_WEIGHT = 1
 
-# Standard-Prioritätsliste als Fallback
 DEFAULT_PRIORITY_ORDER = [
     "critical",
     "high",
@@ -45,7 +42,7 @@ DEFAULT_PRIORITY_ORDER = [
 
 
 # ==============================================================================
-# HILFSFUNKTIONEN (EXAKT KOPIERT AUS DEM TRAININGS-SKRIPT)
+# HILFSFUNKTIONEN (Vokabular & Preprocessing)
 # ==============================================================================
 
 def load_vocab_from_csvs() -> (list, list, list):
@@ -56,7 +53,6 @@ def load_vocab_from_csvs() -> (list, list, list):
         df_pos = pd.read_csv(POS_CSV)
         df_sla = pd.read_csv(SLA_CSV)
 
-        # Stelle sicher, dass alles als String geladen wird, auch Zahlen
         neg_vocab = df_neg['term'].dropna().astype(str).tolist()
         pos_vocab = df_pos['term'].dropna().astype(str).tolist()
         sla_vocab = df_sla['term'].dropna().astype(str).tolist()
@@ -87,21 +83,16 @@ def preprocess_with_vocab(
     """
     if not isinstance(text, str):
         return ""
-
     text_lower = text.lower()
-
     if any(re.search(r'\b' + re.escape(p) + r'\b', text_lower) for p in sla_vocab):
         feature_string = " ".join(["KEY_CORE_APP"] * sla_weight)
         return f"{feature_string} [SEP] {text}"
-
     if any(re.search(r'\b' + re.escape(p) + r'\b', text_lower) for p in neg_vocab):
         feature_string = " ".join(["KEY_CRITICAL"] * neg_weight)
         return f"{feature_string} [SEP] {text}"
-
     if any(re.search(r'\b' + re.escape(p) + r'\b', text_lower) for p in pos_vocab):
         feature_string = " ".join(["KEY_REQUEST"] * pos_weight)
         return f"{feature_string} [SEP] {text}"
-
     feature_string = "KEY_NORMAL"
     return f"{feature_string} [SEP] {text}"
 
@@ -114,20 +105,19 @@ def load_model_and_tokenizer(model_path):
     """Lädt das trainierte Modell und den Tokenizer aus dem gewählten Pfad."""
     print(f"Lade trainiertes Modell aus '{model_path}'...")
     try:
-        # Lade Tokenizer und Modell aus dem Stammverzeichnis des Ergebnisordners
         tokenizer = AutoTokenizer.from_pretrained(model_path)
         model = AutoModelForSequenceClassification.from_pretrained(model_path)
     except OSError:
         print(f"❌ FEHLER: Modell-Ordner '{model_path}' nicht gefunden oder korrupt.")
         print("Stelle sicher, dass 'config.json' und 'pytorch_model.bin' vorhanden sind.")
-        return None, None, None  # KORRIGIERT: Gebe Tupel zurück
+        return None, None, None
     except Exception as e:
         print(f"❌ FEHLER beim Laden des Modells: {e}")
         return None, None, None
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
-    model.eval()  # Wichtig: Modell in den Inferenz-Modus schalten
+    model.eval()
 
     print(f"✅ Modell erfolgreich geladen und auf '{device}' verschoben.")
     return model, tokenizer, device
@@ -136,14 +126,10 @@ def load_model_and_tokenizer(model_path):
 def predict_priority(subject, body, model, tokenizer, device, vocabs, priority_list, max_len):
     """
     Führt eine einzelne Vorhersage für ein neues Ticket durch.
-    Akzeptiert jetzt 'priority_list' und 'max_len'.
     """
     neg_vocab, pos_vocab, sla_vocab = vocabs
+    raw_text = str(body) + " " + str(subject)  # Stellt sicher, dass auch NaNs als "nan" verarbeitet werden
 
-    # 1. Text kombinieren
-    raw_text = str(body) + " " + str(subject)
-
-    # 2. Text anreichern
     enriched_text = preprocess_with_vocab(
         raw_text,
         neg_vocab, pos_vocab, sla_vocab,
@@ -152,19 +138,16 @@ def predict_priority(subject, body, model, tokenizer, device, vocabs, priority_l
         pos_weight=POS_WEIGHT
     )
 
-    # 3. Tokenisieren
-    # KORRIGIERT: Verwendet die 'max_len' aus der config.json (oder Fallback)
     inputs = tokenizer(
         enriched_text,
         padding="max_length",
         truncation=True,
-        max_length=max_len,  # Dynamische Länge
+        max_length=max_len,
         return_tensors="pt"
     )
 
     inputs = {key: val.to(device) for key, val in inputs.items()}
 
-    # 5. Vorhersage durchführen
     with torch.no_grad():
         outputs = model(**inputs)
 
@@ -179,23 +162,24 @@ def predict_priority(subject, body, model, tokenizer, device, vocabs, priority_l
 
 
 # ==============================================================================
-# VALIDIERUNGS-MODUS (KORRIGIERT)
+# VALIDIERUNGS- & BATCH-FUNKTIONEN (NEU)
 # ==============================================================================
 
-def run_batch_evaluation(model, tokenizer, device, vocabs, priority_list, max_len):
+def run_detailed_validation(model, tokenizer, device, vocabs, model_info):
     """
-    Führt die Batch-Prüfung auf 50 zufälligen Samples einer CSV-Datei durch.
-    Akzeptiert 'priority_list' und 'max_len'.
+    Führt eine detaillierte, interaktive Validierung durch (Konfusionsmatrix).
     """
-    print("\n--- Batch-Prüfung (50 Samples) ---")
+    print("\n" + "=" * 70)
+    print("--- Detaillierte Validierung starten (Konfusionsmatrix) ---")
 
-    # 1. Dynamische CSV-Abfrage
-    default_file = DEFAULT_DATA_FILE
-    filepath = input(f"Pfad zur CSV-Datei eingeben (Standard: {default_file}): ")
-    if not filepath:
-        filepath = default_file
+    model_path = model_info['path']
+    priority_list = model_info['labels']
+    max_len = model_info['max_len']
 
-    # 2. CSV laden
+    # --- 1. Validierungs-CSV auswählen ---
+    default_file = model_info.get('training_csv', DEFAULT_DATA_FILE)
+    filepath = input(f"Pfad zur Validierungs-CSV [Standard: {default_file}]: ").strip() or default_file
+
     try:
         df = pd.read_csv(filepath)
         print(f"Lade {len(df)} Zeilen aus {filepath}...")
@@ -206,63 +190,116 @@ def run_batch_evaluation(model, tokenizer, device, vocabs, priority_list, max_le
         print(f"❌ FEHLER beim Lesen der CSV: {e}")
         return
 
-    # 3. Spalten prüfen und 50 Samples ziehen
-    try:
-        # KORRIGIERT: Prüfe auf die Spaltennamen, die im Trainings-Skript
-        # *standardmäßig* verwendet werden.
-        if not all(col in df.columns for col in ['subject', 'body', 'priority']):
-            print("❌ FEHLER: CSV muss Spalten 'subject', 'body' und 'priority' enthalten.")
-            print("   (Die Batch-Prüfung unterstützt derzeit keine übersetzten Spaltennamen.)")
-            return
-        df_sample = df.sample(n=50, random_state=42)
-    except ValueError:
-        print(f"❌ FEHLER: Datei hat weniger als 50 Zeilen. Bitte größere Datei wählen.")
-        return
-    except Exception as e:
-        print(f"❌ FEHLER: {e}")
+    # --- 2. Spalten-Zuweisung ---
+    print("\nWelche Spalten sollen für die Validierung verwendet werden?")
+    default_subj = model_info.get('training_subject_col', 'subject')
+    default_body = model_info.get('training_body_col', 'body')
+    default_label = 'priority'  # Validierungs-Label ist fast immer 'priority'
+
+    subj_col = input(f"  Spaltenname für BETREFF [{default_subj}]: ").strip() or default_subj
+    body_col = input(f"  Spaltenname für TEXT [{default_body}]: ").strip() or default_body
+    label_col = input(f"  Spaltenname für LABEL [{default_label}]: ").strip() or default_label
+
+    required_cols = [subj_col, body_col, label_col]
+    if not all(col in df.columns for col in required_cols):
+        print(f"❌ FEHLER: CSV muss die Spalten '{', '.join(required_cols)}' enthalten.")
         return
 
-    print(f"Starte Vorhersage für 50 zufällige Tickets (Modell mit {len(priority_list)} Labels)...")
+    # --- 3. Sampling-Modus ---
+    print("\nWelche Tickets sollen validiert werden?")
+    print("  [1] Alle Tickets aus der CSV")
+    print("  [2] Manuelle Anzahl pro Prioritäts-Klasse")
 
+    df_sample = None
+    sample_mode = ""
+
+    while True:
+        mode_choice = input("Wähle Modus [1]: ").strip() or "1"
+        if mode_choice == '1':
+            df_sample = df.copy()
+            sample_mode = "Alle"
+            print(f"✅ Alle {len(df_sample)} Tickets werden validiert.")
+            break
+        elif mode_choice == '2':
+            print("  Definiere die Anzahl der Tickets pro Klasse (Enter = 0):")
+            counts_dict = {}
+            for label in priority_list:
+                while True:
+                    count_str = input(f"    Anzahl für '{label}': ").strip() or "0"
+                    try:
+                        counts_dict[label] = int(count_str)
+                        break
+                    except ValueError:
+                        print("    Ungültige Zahl.")
+
+            print("Sammle Samples...")
+            sample_list = []
+            # Stelle sicher, dass die Label-Spalte als String behandelt wird (für den Fall, dass sie als Zahl geladen wurde)
+            df[label_col] = df[label_col].astype(str)
+            df_grouped = df.groupby(label_col)
+            for label, count in counts_dict.items():
+                if count == 0:
+                    continue
+                try:
+                    class_df = df_grouped.get_group(label)
+                    n_available = len(class_df)
+                    n_to_sample = min(n_available, count)
+                    if n_to_sample < count:
+                        print(
+                            f"    WARNUNG: Für '{label}' nur {n_available} statt {count} verfügbar. Nehme {n_to_sample}.")
+                    sample_list.append(class_df.sample(n=n_to_sample, random_state=42))
+                except KeyError:
+                    print(f"    INFO: Label '{label}' nicht in CSV gefunden. Überspringe.")
+
+            if not sample_list:
+                print("❌ FEHLER: Keine Tickets zum Validieren ausgewählt.")
+                return
+
+            df_sample = pd.concat(sample_list)
+            sample_mode = f"Manuell ({len(df_sample)})"
+            print(f"✅ {len(df_sample)} Tickets für die Validierung gesammelt.")
+            break
+        else:
+            print("  Ungültige Eingabe. Bitte '1' oder '2'.")
+
+    # --- 4. Vorhersage-Schleife (mit tqdm) ---
+    print(f"\nStarte Vorhersage für {len(df_sample)} Tickets...")
+
+    originals = df_sample[label_col].tolist()
     predictions = []
-    originals = []
 
-    # 4. Vorhersage-Schleife
-    for index, row in df_sample.iterrows():
-        original_label = row['priority']
-        subject = row['subject']
-        body = row['body']
+    disable_tqdm = len(df_sample) < 10
 
-        predicted_label, _ = predict_priority(subject, body, model, tokenizer, device, vocabs, priority_list, max_len)
-
+    for _, row in tqdm(df_sample.iterrows(), total=len(df_sample), desc="Validiere", disable=disable_tqdm):
+        predicted_label, _ = predict_priority(
+            row[subj_col], row[body_col],
+            model, tokenizer, device, vocabs, priority_list, max_len
+        )
         predictions.append(predicted_label)
-        originals.append(original_label)
 
-    print("✅ Batch-Prüfung abgeschlossen.")
-    print("-" * 30)
+    print("✅ Validierung abgeschlossen.")
+    print("-" * 70)
 
-    # 5. Ergebnisse auswerten (Text)
+    # --- 5. Ergebnisse auswerten (Text) ---
     accuracy = accuracy_score(originals, predictions)
-    print(f"Gesamt-Genauigkeit (Accuracy) der 50 Samples: {accuracy:.2%}")
+    print(f"Gesamt-Genauigkeit (Accuracy) [{sample_mode} Samples]: {accuracy:.2%}")
     print("\nDetail-Auswertung (Classification Report):")
 
-    # Stelle sicher, dass die Labels für den Report mit der 'priority_list' übereinstimmen
     report_labels = [label for label in priority_list if label in set(originals) | set(predictions)]
 
     report = classification_report(
         originals,
         predictions,
         labels=report_labels,
-        target_names=report_labels,  # Zeige nur die Namen an, die auch gefunden wurden
+        target_names=report_labels,
         zero_division=0
     )
     print(report)
-    print("-" * 30)
+    print("-" * 70)
 
-    # 6. Ergebnisse auswerten (Grafik)
+    # --- 6. Ergebnisse auswerten (Grafik) ---
     try:
-        cm = confusion_matrix(originals, predictions,
-                              labels=priority_list)  # Verwende die volle Liste für die Achsen-Reihenfolge
+        cm = confusion_matrix(originals, predictions, labels=priority_list)
 
         plt.figure(figsize=(10, 7))
         sns.heatmap(
@@ -273,29 +310,159 @@ def run_batch_evaluation(model, tokenizer, device, vocabs, priority_list, max_le
             xticklabels=priority_list,
             yticklabels=priority_list
         )
-        plt.title(f'Konfusionsmatrix (50 Samples / Genauigkeit: {accuracy:.2%})')
+        plt.title(
+            f'Konfusionsmatrix - {os.path.basename(model_path)}\n[{sample_mode} Samples / Genauigkeit: {accuracy:.2%}]')
         plt.ylabel('Wahres Label (aus CSV)')
         plt.xlabel('Vorhergesagtes Label (Modell)')
 
-        output_filename = "konfusionsmatrix_check.png"
+        timestamp = int(time.time())
+        output_filename = os.path.join(model_path, f"validierungs_matrix_{timestamp}.png")
+
         plt.savefig(output_filename)
-        print(f"✅ Grafik wurde als '{output_filename}' gespeichert.")
+        print(f"✅ Grafik wurde gespeichert in: {output_filename}")
 
     except Exception as e:
         print(f"❌ FEHLER beim Erstellen der Grafik: {e}")
         print("  (Stelle sicher, dass 'matplotlib' und 'seaborn' installiert sind: pip install matplotlib seaborn)")
 
-    print("-" * 30)
+    print("-" * 70)
+
+
+# --- NEU: Funktion für die Batch-Klassifizierung ---
+def run_batch_classification(model, tokenizer, device, vocabs, model_info):
+    """
+    Führt eine vollständige Klassifizierung einer CSV-Datei durch
+    und speichert die Ergebnisse.
+    """
+    print("\n" + "=" * 70)
+    print("--- Batch-Klassifizierung starten ---")
+
+    model_path = model_info['path']
+    priority_list = model_info['labels']
+    max_len = model_info['max_len']
+
+    # --- 1. Quell-CSV auswählen ---
+    default_file = model_info.get('training_csv', DEFAULT_DATA_FILE)
+    filepath = input(
+        f"Pfad zur Quell-CSV (die klassifiziert werden soll) [Standard: {default_file}]: ").strip() or default_file
+
+    try:
+        df = pd.read_csv(filepath)
+        print(f"Lade {len(df)} Zeilen aus {filepath}...")
+    except FileNotFoundError:
+        print(f"❌ FEHLER: Datei nicht gefunden: {filepath}")
+        return
+    except Exception as e:
+        print(f"❌ FEHLER beim Lesen der CSV: {e}")
+        return
+
+    # --- 2. Spalten-Zuweisung ---
+    print("\nWelche Spalten sollen für die Klassifizierung verwendet werden?")
+    default_subj = model_info.get('training_subject_col', 'subject')
+    default_body = model_info.get('training_body_col', 'body')
+
+    subj_col = input(f"  Spaltenname für BETREFF [{default_subj}]: ").strip() or default_subj
+    body_col = input(f"  Spaltenname für TEXT [{default_body}]: ").strip() or default_body
+
+    required_cols = [subj_col, body_col]
+    if not all(col in df.columns for col in required_cols):
+        print(f"❌ FEHLER: CSV muss die Spalten '{', '.join(required_cols)}' enthalten.")
+        return
+
+    # --- 3. Original-Priorität prüfen (Goal 6) ---
+    has_orig_priority = False
+    if 'priority' in df.columns:
+        print("  -> Spalte 'priority' gefunden. Wird zu 'orig_priority' umbenannt.")
+        df.rename(columns={'priority': 'orig_priority'}, inplace=True)
+        has_orig_priority = True
+    elif 'orig_priority' in df.columns:
+        print("  -> Spalte 'orig_priority' bereits vorhanden.")
+        has_orig_priority = True
+
+    # --- 4. Vorhersage-Schleife (Goal 5) ---
+    print(f"\nStarte Klassifizierung für {len(df)} Tickets...")
+
+    predictions = []
+    confidences = []
+
+    start_time = time.time()
+
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="Klassifiziere"):
+        predicted_label, confidence = predict_priority(
+            row[subj_col], row[body_col],
+            model, tokenizer, device, vocabs, priority_list, max_len
+        )
+        predictions.append(predicted_label)
+        confidences.append(confidence)
+
+    end_time = time.time()
+    duration_sec = end_time - start_time
+
+    # Ergebnisse dem DataFrame hinzufügen
+    df['predicted_priority'] = predictions
+    df['confidence'] = confidences
+
+    print("✅ Klassifizierung abgeschlossen.")
+    print("-" * 70)
+
+    # --- 5. Genauigkeit berechnen (falls möglich) ---
+    accuracy_str = "N/A (Keine 'orig_priority' Spalte gefunden)"
+    if has_orig_priority:
+        try:
+            accuracy = accuracy_score(df['orig_priority'], df['predicted_priority'])
+            accuracy_str = f"{accuracy:.4f} ({accuracy:.2%})"
+        except Exception as e:
+            accuracy_str = f"Fehler bei Berechnung: {e}"
+
+    # --- 6. Ergebnisse speichern (Goal 3 & 4) ---
+    try:
+        timestamp_date = datetime.now().strftime("%Y-%m-%d")
+        timestamp_full = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # Unterordner erstellen
+        output_subdir = os.path.join(model_path, f"processed_csv_{timestamp_date}")
+        os.makedirs(output_subdir, exist_ok=True)
+
+        # Dateinamen generieren
+        source_csv_name = os.path.basename(filepath)
+        output_csv_name = f"{timestamp_full}_{source_csv_name.replace('.csv', '')}_classified.csv"
+        output_summary_name = f"{timestamp_full}_{source_csv_name.replace('.csv', '')}_summary.txt"
+
+        output_csv_path = os.path.join(output_subdir, output_csv_name)
+        output_summary_path = os.path.join(output_subdir, output_summary_name)
+
+        # CSV speichern
+        df.to_csv(output_csv_path, index=False, encoding='utf-8-sig')
+
+        # Summary speichern (Goal 5 Metriken)
+        with open(output_summary_path, "w", encoding="utf-8") as f:
+            f.write("=== Batch-Klassifizierungs-Zusammenfassung ===\n")
+            f.write(f"Modell: {model_path}\n")
+            f.write(f"Quelle-CSV: {filepath}\n")
+            f.write(f"Startzeit: {datetime.fromtimestamp(start_time).strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Endzeit: {datetime.fromtimestamp(end_time).strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Dauer: {duration_sec:.2f} Sekunden\n")
+            f.write(f"Anzahl Zeilen: {len(df)}\n")
+            f.write(f"Genauigkeit (vs 'orig_priority'): {accuracy_str}\n")
+
+        print("✅ Ergebnisse erfolgreich gespeichert.")
+        print(f"  -> CSV-Datei: {output_csv_path}")
+        print(f"  -> Summary:   {output_summary_path}")
+        print(f"  -> Genauigkeit: {accuracy_str}")
+
+    except Exception as e:
+        print(f"❌ FEHLER beim Speichern der Ergebnisse: {e}")
+
+    print("-" * 70)
 
 
 # ==============================================================================
-# MODIFIZIERTE HAUPT-SCHLEIFEN
+# HAUPT-MENÜS
 # ==============================================================================
 
 def interactive_chat_mode(model, tokenizer, device, vocabs, priority_list, max_len):
     """
     Startet die interaktive Chat-Schleife.
-    Akzeptiert 'priority_list' und 'max_len'.
     """
     print("\n--- Interaktiver KI-Priorisierungs-Chat ---")
     print(f"Modell: {os.path.basename(model.config.name_or_path)} ({len(priority_list)} Labels, max_len={max_len})")
@@ -325,40 +492,94 @@ def interactive_chat_mode(model, tokenizer, device, vocabs, priority_list, max_l
     print("Interaktiver Modus beendet.")
 
 
-def main_menu(model, tokenizer, device, vocabs, priority_list, max_len):
+# --- MODIFIZIERT: Das Menü, das erscheint, NACHDEM ein Modell ausgewählt wurde ---
+def show_model_action_menu(model_info, vocabs):
     """
-    Zeigt das Hauptmenü NACHDEM ein Modell geladen wurde.
-    Akzeptiert alle geladenen Komponenten.
+    Zeigt das Menü für ein ausgewähltes Modell (Chat, Validierung, Batch, Zurück).
     """
+    model_path = model_info['path']
+    priority_list = model_info['labels']
+    max_len = model_info['max_len']
+
     while True:
-        print("\n--- Hauptmenü KI-Priorisierung ---")
-        print(
-            f"✅ Geladenes Modell: {os.path.basename(model.config.name_or_path)} (Labels: {len(priority_list)}, max_len: {max_len})")
-        print("1: Interaktiver Chat-Modus")
-        print("2: Batch-Prüfung (50 zufällige Samples + Grafik)")
-        print("q: Beenden (und neues Modell wählen)")
+        print("\n" + "=" * 70)
+        print(f"--- Modell ausgewählt ---")
+        print(f"Ordner: {model_path}")
+        print(f"Labels: {', '.join(priority_list)}")
+        print(f"Max. Tokenlänge: {max_len}")
+        print(f"Trainings-CSV: {model_info.get('training_csv', 'N/A')}")
+        print("-" * 70)
+        print("  [1] Interaktiven Chat starten")
+        print("  [2] Detaillierte Validierung starten (Konfusionsmatrix)")
+        print("  [3] Batch-Klassifizierung einer CSV-Datei (NEU)")
+        print("  [b] Zurück zur Modellauswahl")
 
         choice = input("Wähle eine Option: ").strip().lower()
 
-        if choice == '1':
-            interactive_chat_mode(model, tokenizer, device, vocabs, priority_list, max_len)
-        elif choice == '2':
-            run_batch_evaluation(model, tokenizer, device, vocabs, priority_list, max_len)
-        elif choice in ['q', 'exit', 'quit']:
-            print("Zurück zur Modellauswahl.")
-            # Lösche Modell und Tokenizer aus dem Speicher
-            del model
-            del tokenizer
-            if device == "cuda":
-                torch.cuda.empty_cache()
-            break
-        else:
-            print("Ungültige Eingabe, bitte '1', '2' oder 'q' wählen.")
+        model, tokenizer, device = None, None, None  # Platzhalter
+
+        try:
+            if choice == '1':
+                model, tokenizer, device = load_model_and_tokenizer(model_path)
+                if model:
+                    interactive_chat_mode(model, tokenizer, device, vocabs, priority_list, max_len)
+
+            elif choice == '2':
+                model, tokenizer, device = load_model_and_tokenizer(model_path)
+                if model:
+                    run_detailed_validation(model, tokenizer, device, vocabs, model_info)
+
+            # --- NEU: Option 3 ---
+            elif choice == '3':
+                model, tokenizer, device = load_model_and_tokenizer(model_path)
+                if model:
+                    run_batch_classification(model, tokenizer, device, vocabs, model_info)
+
+            elif choice in ['b', 'q', 'back', 'quit', 'exit']:
+                print("Zurück zur Modellauswahl.")
+                return  # Verlässt diese Funktion und kehrt zur 'main'-Schleife zurück
+
+            else:
+                print("Ungültige Eingabe, bitte '1', '2', '3' oder 'b' wählen.")
+
+        finally:
+            # Stellt sicher, dass das Modell aus dem VRAM entfernt wird
+            if model:
+                del model
+                del tokenizer
+                if device == "cuda":
+                    torch.cuda.empty_cache()
+                    print(f"(Modell '{os.path.basename(model_path)}' aus VRAM entfernt.)")
 
 
 # ==============================================================================
-# NEUE FUNKTIONEN: MODELLAUSWAHL (KORRIGIERT & GEPATCHT)
+# MODELLAUSWAHL (MODIFIZIERT: Liest Trainings-Infos)
 # ==============================================================================
+
+def parse_summary_txt(filepath):
+    """Liest die training_setup_summary.txt und extrahiert die wichtigsten Infos."""
+    info = {
+        "training_csv": "N/A",
+        "training_subject_col": "N/A",
+        "training_body_col": "N/A"
+    }
+    if not os.path.exists(filepath):
+        return info  # Datei nicht gefunden, gib Standard zurück
+
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            for line in f:
+                # Verwende .startswith für Robustheit
+                if line.strip().startswith("CSV-Datei:"):
+                    info["training_csv"] = line.split(":", 1)[1].strip()
+                elif line.strip().startswith("Spalte (Betreff):"):
+                    info["training_subject_col"] = line.split(":", 1)[1].strip()
+                elif line.strip().startswith("Spalte (Text):"):
+                    info["training_body_col"] = line.split(":", 1)[1].strip()
+        return info
+    except Exception:
+        return info  # Bei Lesefehler Standard zurückgeben
+
 
 def find_available_models():
     """
@@ -368,8 +589,7 @@ def find_available_models():
     KORRIGIERT: Lädt Modelle auch dann, wenn Checkpoints gelöscht wurden,
     solange config.json im Stammverzeichnis vorhanden ist.
     """
-    print("Suche nach trainierten Modellen (Ordner 'ergebnisse_*')...")
-    # KORRIGIERT: Füge "./" hinzu, um relative Pfade korrekt zu finden
+    print("Suche nach trainierten Modellen (Ordner './ergebnisse_*')...")
     model_dirs = glob.glob("./ergebnisse_*")
     available_models = []
 
@@ -378,10 +598,9 @@ def find_available_models():
             continue
 
         config_path = os.path.join(path, "config.json")
+        summary_path = os.path.join(path, "training_setup_summary.txt")  # NEU
 
-        # --- KORREKTUR: PRIMÄRE PRÜFUNG ---
-        # Ein Modell ist gültig, wenn es eine config.json im Stammverzeichnis hat,
-        # da 'trainer.save_model()' dies dort speichert.
+        # Ein Modell ist gültig, wenn es eine config.json im Stammverzeichnis hat
         if not os.path.exists(config_path):
             print(f"ℹ️  '{path}' enthält keine 'config.json'. Überspringe.")
             continue
@@ -398,13 +617,12 @@ def find_available_models():
 
             priority_list = [v for k, v in sorted(id2label.items(), key=lambda item: int(item[0]))]
 
-            # Hole die Tokenizer-Länge (max_len), die beim Training verwendet wurde
-            # Fallback auf 512 (alt) oder 256 (alt-alt)
-            max_len = config.get("model_max_length", 512)  # DistilBERT-Limit
+            # Tokenizer-Länge (max_len) aus der config.json lesen
+            max_len = config.get("model_max_length", 512)
             if "max_position_embeddings" in config:
-                max_len = config.get("max_position_embeddings", 512)  # Standard-Name
+                max_len = config.get("max_position_embeddings", 512)
 
-            # --- PATCH: Generische 'LABEL_0' Fehler abfangen ---
+            # PATCH: Generische 'LABEL_0' Fehler abfangen
             is_generic_label = False
             if not priority_list or priority_list[0].startswith("LABEL_"):
                 is_generic_label = True
@@ -413,10 +631,9 @@ def find_available_models():
                 else:
                     print(
                         f"⚠️ Warnung: {path} hat generische Labels UND eine unerwartete Label-Anzahl ({len(priority_list)}).")
-                    is_generic_label = False  # Patch konnte nicht angewendet werden
+                    is_generic_label = False
 
-            # 2. Metriken (Optional)
-            # Versuche, die Metriken aus dem *letzten* Checkpoint zu laden
+                    # 2. Metriken (Optional) aus dem letzten Checkpoint
             best_metric_val = "N/A"
             metric_name = "N/A"
 
@@ -437,17 +654,23 @@ def find_available_models():
                         best_metric_val = state.get("best_metric", 0.0)
                         metric_name = state.get("metric_for_best_model", "best_metric")
                 except Exception:
-                    # Wenn das Lesen des Status fehlschlägt, ist es nicht schlim
-                    metric_name = "Fehler beim Lesen"
+                    metric_name = "Fehler (Metrik)"
 
-            available_models.append({
+            # 3. Trainings-Setup (Optional) aus der summary.txt lesen (NEU)
+            summary_info = parse_summary_txt(summary_path)
+
+            # Alle Infos zusammenführen
+            model_info_dict = {
                 "path": path,
                 "metric_val": best_metric_val,
                 "metric_name": metric_name,
                 "labels": priority_list,
                 "is_generic_label": is_generic_label,
-                "max_len": max_len  # NEU: Speichere die max_len
-            })
+                "max_len": max_len
+            }
+            model_info_dict.update(summary_info)  # Fügt training_csv etc. hinzu
+            available_models.append(model_info_dict)
+
         except Exception as e:
             print(f"Fehler beim Lesen der Konfiguration von {path}: {e}")
 
@@ -457,6 +680,7 @@ def find_available_models():
 def select_model(models):
     """
     Zeigt dem Benutzer die gefundenen Modelle an und lässt ihn eines auswählen.
+    (MODIFIZIERT: Zeigt jetzt Trainings-CSV und Spalten an)
     """
     if not models:
         print("\n" + "=" * 50)
@@ -470,16 +694,14 @@ def select_model(models):
 
     print("\n--- Verfügbare trainierte Modelle ---")
 
-    # Sortiere Modelle, sodass die Neuesten (nach Datum im Namen) oben sind
     try:
         models.sort(key=lambda x: x['path'], reverse=True)
     except Exception:
-        pass  # Ignoriere Sortierfehler
+        pass
 
     for i, model_info in enumerate(models):
         label_count = len(model_info['labels'])
 
-        # Metrik formatieren (geht jetzt mit N/A um)
         if isinstance(model_info['metric_val'], float):
             metric_str = f"{model_info['metric_name']} = {model_info['metric_val']:.4f}"
         else:
@@ -498,9 +720,14 @@ def select_model(models):
         print(f"      Metrik: {metric_str}")
         print(f"      Max. Tokenlänge: {model_info['max_len']}")
 
+        # NEU: Trainingsdaten-Infos anzeigen
+        print(f"      Trainings-CSV: {model_info.get('training_csv', 'N/A')}")
+        print(
+            f"      Trainings-Spalten: [Body] {model_info.get('training_body_col', 'N/A')}, [Subject] {model_info.get('training_subject_col', 'N/A')}")
+
     while True:
         try:
-            choice_str = input(f"\nWähle ein Modell zum Laden (1-{len(models)}) [oder 'q' zum Beenden]: ")
+            choice_str = input(f"\nWähle ein Modell (1-{len(models)}) [oder 'q' zum Beenden]: ")
             if choice_str.lower() in ['q', 'exit', 'quit']:
                 sys.exit("Programm beendet.")
 
@@ -514,7 +741,7 @@ def select_model(models):
 
 
 # ==============================================================================
-# NEUE HAUPT-FUNKTION (Startpunkt)
+# HAUPT-FUNKTION (Startpunkt) (NEU STRUKTURIERT)
 # ==============================================================================
 
 def main():
@@ -536,20 +763,8 @@ def main():
         if selected_model_info is None:
             continue  # Springt zum Anfang der Schleife und sucht erneut
 
-        MODEL_PATH = selected_model_info["path"]
-        PRIORITY_ORDER = selected_model_info["labels"]
-        MAX_LEN = selected_model_info["max_len"]  # NEU
-
-        # 3. Ausgewähltes Modell laden
-        model, tokenizer, device = load_model_and_tokenizer(MODEL_PATH)
-
-        if model is None:
-            print(f"Fehler beim Laden von {MODEL_PATH}. Kehre zur Auswahl zurück.")
-            time.sleep(2)
-            continue  # Kehre zur Modellauswahl zurück
-
-        # 4. Starte das Untermenü mit den geladenen, modellspezifischen Daten
-        main_menu(model, tokenizer, device, vocabs, PRIORITY_ORDER, MAX_LEN)
+        # 3. Starte das Untermenü für das ausgewählte Modell
+        show_model_action_menu(selected_model_info, vocabs)
 
 
 if __name__ == "__main__":
