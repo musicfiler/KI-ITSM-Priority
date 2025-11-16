@@ -34,8 +34,7 @@ SLA_WEIGHT = 5
 NEG_WEIGHT = 4
 POS_WEIGHT = 1
 
-# NEU: Standard-Prioritätsliste als Fallback,
-# falls die config.json generische 'LABEL_0'-Namen enthält.
+# Standard-Prioritätsliste als Fallback
 DEFAULT_PRIORITY_ORDER = [
     "critical",
     "high",
@@ -57,9 +56,10 @@ def load_vocab_from_csvs() -> (list, list, list):
         df_pos = pd.read_csv(POS_CSV)
         df_sla = pd.read_csv(SLA_CSV)
 
-        neg_vocab = df_neg['term'].dropna().tolist()
-        pos_vocab = df_pos['term'].dropna().tolist()
-        sla_vocab = df_sla['term'].dropna().tolist()
+        # Stelle sicher, dass alles als String geladen wird, auch Zahlen
+        neg_vocab = df_neg['term'].dropna().astype(str).tolist()
+        pos_vocab = df_pos['term'].dropna().astype(str).tolist()
+        sla_vocab = df_sla['term'].dropna().astype(str).tolist()
 
         print(f"  {len(neg_vocab)} negative, {len(pos_vocab)} positive, {len(sla_vocab)} SLA-Begriffe geladen.")
         return neg_vocab, pos_vocab, sla_vocab
@@ -84,14 +84,12 @@ def preprocess_with_vocab(
 ) -> str:
     """
     Reichert einen Text mit speziellen Signal-Wörtern (KEY_...) an.
-    (Exakt kopiert aus dem Trainings-Skript)
     """
     if not isinstance(text, str):
         return ""
 
     text_lower = text.lower()
 
-    # --- HIERARCHISCHE PRÜFUNG ---
     if any(re.search(r'\b' + re.escape(p) + r'\b', text_lower) for p in sla_vocab):
         feature_string = " ".join(["KEY_CORE_APP"] * sla_weight)
         return f"{feature_string} [SEP] {text}"
@@ -116,12 +114,16 @@ def load_model_and_tokenizer(model_path):
     """Lädt das trainierte Modell und den Tokenizer aus dem gewählten Pfad."""
     print(f"Lade trainiertes Modell aus '{model_path}'...")
     try:
+        # Lade Tokenizer und Modell aus dem Stammverzeichnis des Ergebnisordners
         tokenizer = AutoTokenizer.from_pretrained(model_path)
         model = AutoModelForSequenceClassification.from_pretrained(model_path)
     except OSError:
-        print(f"❌ FEHLER: Modell-Ordner '{model_path}' nicht gefunden.")
-        print("Stelle sicher, dass das Training abgeschlossen wurde und der Ordner existiert.")
-        sys.exit()
+        print(f"❌ FEHLER: Modell-Ordner '{model_path}' nicht gefunden oder korrupt.")
+        print("Stelle sicher, dass 'config.json' und 'pytorch_model.bin' vorhanden sind.")
+        return None, None, None  # KORRIGIERT: Gebe Tupel zurück
+    except Exception as e:
+        print(f"❌ FEHLER beim Laden des Modells: {e}")
+        return None, None, None
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
@@ -131,17 +133,17 @@ def load_model_and_tokenizer(model_path):
     return model, tokenizer, device
 
 
-def predict_priority(subject, body, model, tokenizer, device, vocabs, priority_list):
+def predict_priority(subject, body, model, tokenizer, device, vocabs, priority_list, max_len):
     """
     Führt eine einzelne Vorhersage für ein neues Ticket durch.
-    Akzeptiert jetzt eine dynamische 'priority_list'.
+    Akzeptiert jetzt 'priority_list' und 'max_len'.
     """
     neg_vocab, pos_vocab, sla_vocab = vocabs
 
-    # 1. Text kombinieren (EXAKTE REIHENFOLGE WIE IM TRAINING!)
+    # 1. Text kombinieren
     raw_text = str(body) + " " + str(subject)
 
-    # 2. Text anreichern (EXAKTE LOGIK WIE IM TRAINING!)
+    # 2. Text anreichern
     enriched_text = preprocess_with_vocab(
         raw_text,
         neg_vocab, pos_vocab, sla_vocab,
@@ -151,13 +153,13 @@ def predict_priority(subject, body, model, tokenizer, device, vocabs, priority_l
     )
 
     # 3. Tokenisieren
-    #    max_length muss mit dem Training übereinstimmen (war 256)
+    # KORRIGIERT: Verwendet die 'max_len' aus der config.json (oder Fallback)
     inputs = tokenizer(
         enriched_text,
         padding="max_length",
         truncation=True,
-        max_length=256,
-        return_tensors="pt"  # "pt" = PyTorch Tensors
+        max_length=max_len,  # Dynamische Länge
+        return_tensors="pt"
     )
 
     inputs = {key: val.to(device) for key, val in inputs.items()}
@@ -180,14 +182,14 @@ def predict_priority(subject, body, model, tokenizer, device, vocabs, priority_l
 # VALIDIERUNGS-MODUS (KORRIGIERT)
 # ==============================================================================
 
-def run_batch_evaluation(model, tokenizer, device, vocabs, priority_list):
+def run_batch_evaluation(model, tokenizer, device, vocabs, priority_list, max_len):
     """
     Führt die Batch-Prüfung auf 50 zufälligen Samples einer CSV-Datei durch.
-    Akzeptiert eine dynamische 'priority_list'.
+    Akzeptiert 'priority_list' und 'max_len'.
     """
     print("\n--- Batch-Prüfung (50 Samples) ---")
 
-    # 1. Dynamische CSV-Abfrage (KORRIGIERTER Standardpfad)
+    # 1. Dynamische CSV-Abfrage
     default_file = DEFAULT_DATA_FILE
     filepath = input(f"Pfad zur CSV-Datei eingeben (Standard: {default_file}): ")
     if not filepath:
@@ -206,8 +208,11 @@ def run_batch_evaluation(model, tokenizer, device, vocabs, priority_list):
 
     # 3. Spalten prüfen und 50 Samples ziehen
     try:
+        # KORRIGIERT: Prüfe auf die Spaltennamen, die im Trainings-Skript
+        # *standardmäßig* verwendet werden.
         if not all(col in df.columns for col in ['subject', 'body', 'priority']):
             print("❌ FEHLER: CSV muss Spalten 'subject', 'body' und 'priority' enthalten.")
+            print("   (Die Batch-Prüfung unterstützt derzeit keine übersetzten Spaltennamen.)")
             return
         df_sample = df.sample(n=50, random_state=42)
     except ValueError:
@@ -228,8 +233,7 @@ def run_batch_evaluation(model, tokenizer, device, vocabs, priority_list):
         subject = row['subject']
         body = row['body']
 
-        # Vorhersage durchführen
-        predicted_label, _ = predict_priority(subject, body, model, tokenizer, device, vocabs, priority_list)
+        predicted_label, _ = predict_priority(subject, body, model, tokenizer, device, vocabs, priority_list, max_len)
 
         predictions.append(predicted_label)
         originals.append(original_label)
@@ -242,22 +246,14 @@ def run_batch_evaluation(model, tokenizer, device, vocabs, priority_list):
     print(f"Gesamt-Genauigkeit (Accuracy) der 50 Samples: {accuracy:.2%}")
     print("\nDetail-Auswertung (Classification Report):")
 
-    # KORREKTUR: Die 'labels' für den Report müssen die Labels sein,
-    # die *tatsächlich* in den 'originals' (aus der CSV) UND den 'predictions' vorkommen.
-    # Wir verwenden 'priority_list' als Wunschliste, aber sklearn filtert automatisch.
-    # Das Problem war der Label-Mismatch (z.B. 'LABEL_0' vs 'critical').
-    # Da 'priority_list' jetzt dank unseres Fallbacks korrekt ist ('critical' etc.),
-    # wird dieser Report nun funktionieren.
-
-    # Ermittle alle einzigartigen Labels, die *wirklich* in den Daten vorkommen
-    # (Dies ist robuster als nur 'priority_list' zu übergeben)
-    unique_labels = sorted(list(set(originals) | set(predictions)))
+    # Stelle sicher, dass die Labels für den Report mit der 'priority_list' übereinstimmen
+    report_labels = [label for label in priority_list if label in set(originals) | set(predictions)]
 
     report = classification_report(
         originals,
         predictions,
-        labels=unique_labels,  # Verwende die *tatsächlich* vorhandenen Labels
-        target_names=priority_list,  # Gib die *Wunschnamen* an (wenn sie übereinstimmen)
+        labels=report_labels,
+        target_names=report_labels,  # Zeige nur die Namen an, die auch gefunden wurden
         zero_division=0
     )
     print(report)
@@ -265,9 +261,8 @@ def run_batch_evaluation(model, tokenizer, device, vocabs, priority_list):
 
     # 6. Ergebnisse auswerten (Grafik)
     try:
-        # KORREKTUR: Auch hier müssen die 'labels' die sein,
-        # die in den Daten (originals, predictions) vorkommen.
-        cm = confusion_matrix(originals, predictions, labels=unique_labels)
+        cm = confusion_matrix(originals, predictions,
+                              labels=priority_list)  # Verwende die volle Liste für die Achsen-Reihenfolge
 
         plt.figure(figsize=(10, 7))
         sns.heatmap(
@@ -275,8 +270,8 @@ def run_batch_evaluation(model, tokenizer, device, vocabs, priority_list):
             annot=True,
             fmt='d',
             cmap='Blues',
-            xticklabels=unique_labels,  # Zeige die Achsenbeschriftungen
-            yticklabels=unique_labels  # basierend auf den gefundenen Labels
+            xticklabels=priority_list,
+            yticklabels=priority_list
         )
         plt.title(f'Konfusionsmatrix (50 Samples / Genauigkeit: {accuracy:.2%})')
         plt.ylabel('Wahres Label (aus CSV)')
@@ -297,13 +292,13 @@ def run_batch_evaluation(model, tokenizer, device, vocabs, priority_list):
 # MODIFIZIERTE HAUPT-SCHLEIFEN
 # ==============================================================================
 
-def interactive_chat_mode(model, tokenizer, device, vocabs, priority_list):
+def interactive_chat_mode(model, tokenizer, device, vocabs, priority_list, max_len):
     """
     Startet die interaktive Chat-Schleife.
-    Akzeptiert 'priority_list'.
+    Akzeptiert 'priority_list' und 'max_len'.
     """
     print("\n--- Interaktiver KI-Priorisierungs-Chat ---")
-    print(f"Modell: {model.config.name_or_path} ({len(priority_list)} Labels)")
+    print(f"Modell: {os.path.basename(model.config.name_or_path)} ({len(priority_list)} Labels, max_len={max_len})")
     print("Gib 'exit' oder 'quit' ein, um zum Hauptmenü zurückzukehren.")
     print("-" * 30)
 
@@ -317,7 +312,7 @@ def interactive_chat_mode(model, tokenizer, device, vocabs, priority_list):
             break
 
         try:
-            label, conf = predict_priority(subject, body, model, tokenizer, device, vocabs, priority_list)
+            label, conf = predict_priority(subject, body, model, tokenizer, device, vocabs, priority_list, max_len)
 
             print("-" * 30)
             print(f"🤖 Vorhergesagte Priorität: >> {label.upper()} <<")
@@ -330,14 +325,15 @@ def interactive_chat_mode(model, tokenizer, device, vocabs, priority_list):
     print("Interaktiver Modus beendet.")
 
 
-def main_menu(model, tokenizer, device, vocabs, priority_list):
+def main_menu(model, tokenizer, device, vocabs, priority_list, max_len):
     """
     Zeigt das Hauptmenü NACHDEM ein Modell geladen wurde.
     Akzeptiert alle geladenen Komponenten.
     """
     while True:
         print("\n--- Hauptmenü KI-Priorisierung ---")
-        print(f"✅ Geladenes Modell: {os.path.basename(model.config.name_or_path)} ({len(priority_list)} Labels)")
+        print(
+            f"✅ Geladenes Modell: {os.path.basename(model.config.name_or_path)} (Labels: {len(priority_list)}, max_len: {max_len})")
         print("1: Interaktiver Chat-Modus")
         print("2: Batch-Prüfung (50 zufällige Samples + Grafik)")
         print("q: Beenden (und neues Modell wählen)")
@@ -345,11 +341,16 @@ def main_menu(model, tokenizer, device, vocabs, priority_list):
         choice = input("Wähle eine Option: ").strip().lower()
 
         if choice == '1':
-            interactive_chat_mode(model, tokenizer, device, vocabs, priority_list)
+            interactive_chat_mode(model, tokenizer, device, vocabs, priority_list, max_len)
         elif choice == '2':
-            run_batch_evaluation(model, tokenizer, device, vocabs, priority_list)
+            run_batch_evaluation(model, tokenizer, device, vocabs, priority_list, max_len)
         elif choice in ['q', 'exit', 'quit']:
             print("Zurück zur Modellauswahl.")
+            # Lösche Modell und Tokenizer aus dem Speicher
+            del model
+            del tokenizer
+            if device == "cuda":
+                torch.cuda.empty_cache()
             break
         else:
             print("Ungültige Eingabe, bitte '1', '2' oder 'q' wählen.")
@@ -364,11 +365,12 @@ def find_available_models():
     Sucht nach allen 'ergebnisse_*' Ordnern und extrahiert Metriken
     und Label-Konfigurationen.
 
-    KORRIGIERT: Sucht 'trainer_state.json' im letzten Checkpoint-Ordner.
-    PATCH: Fängt generische 'LABEL_0'-Fehler ab.
+    KORRIGIERT: Lädt Modelle auch dann, wenn Checkpoints gelöscht wurden,
+    solange config.json im Stammverzeichnis vorhanden ist.
     """
     print("Suche nach trainierten Modellen (Ordner 'ergebnisse_*')...")
-    model_dirs = glob.glob("ergebnisse_*")
+    # KORRIGIERT: Füge "./" hinzu, um relative Pfade korrekt zu finden
+    model_dirs = glob.glob("./ergebnisse_*")
     available_models = []
 
     for path in model_dirs:
@@ -377,73 +379,77 @@ def find_available_models():
 
         config_path = os.path.join(path, "config.json")
 
-        # 1. Finde alle Checkpoint-Ordner
-        checkpoints = [
-            d for d in os.listdir(path)
-            if d.startswith("checkpoint-") and os.path.isdir(os.path.join(path, d))
-        ]
-
-        if not checkpoints:
-            print(f"ℹ️  '{path}' enthält keine Checkpoints. Überspringe.")
+        # --- KORREKTUR: PRIMÄRE PRÜFUNG ---
+        # Ein Modell ist gültig, wenn es eine config.json im Stammverzeichnis hat,
+        # da 'trainer.save_model()' dies dort speichert.
+        if not os.path.exists(config_path):
+            print(f"ℹ️  '{path}' enthält keine 'config.json'. Überspringe.")
             continue
 
-        # 2. Sortiere sie numerisch (nach Schrittzahl)
         try:
-            checkpoints.sort(key=lambda x: int(x.split('-')[-1]))
-        except ValueError:
-            print(f"⚠️  Warnung: Ungültiger Checkpoint-Name in '{path}'. Überspringe.")
-            continue
+            # 1. Konfiguration (Labels) lesen
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
 
-        # 3. Wähle den letzten Checkpoint
-        last_checkpoint_dir = checkpoints[-1]
-        state_path = os.path.join(path, last_checkpoint_dir, "trainer_state.json")
+            id2label = config.get("id2label", {})
+            if not id2label:
+                print(f"⚠️ Warnung: 'config.json' in {path} enthält keine 'id2label'-Info. Überspringe.")
+                continue
 
-        if os.path.exists(config_path) and os.path.exists(state_path):
-            try:
-                # 1. Konfiguration (Labels) lesen (aus dem Root-Ordner)
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
+            priority_list = [v for k, v in sorted(id2label.items(), key=lambda item: int(item[0]))]
 
-                id2label = config.get("id2label", {})
-                if not id2label:
-                    print(f"⚠️ Warnung: 'config.json' in {path} enthält keine 'id2label'-Info. Überspringe.")
-                    continue
+            # Hole die Tokenizer-Länge (max_len), die beim Training verwendet wurde
+            # Fallback auf 512 (alt) oder 256 (alt-alt)
+            max_len = config.get("model_max_length", 512)  # DistilBERT-Limit
+            if "max_position_embeddings" in config:
+                max_len = config.get("max_position_embeddings", 512)  # Standard-Name
 
-                priority_list = [v for k, v in sorted(id2label.items(), key=lambda item: int(item[0]))]
+            # --- PATCH: Generische 'LABEL_0' Fehler abfangen ---
+            is_generic_label = False
+            if not priority_list or priority_list[0].startswith("LABEL_"):
+                is_generic_label = True
+                if len(priority_list) == len(DEFAULT_PRIORITY_ORDER):
+                    priority_list = DEFAULT_PRIORITY_ORDER
+                else:
+                    print(
+                        f"⚠️ Warnung: {path} hat generische Labels UND eine unerwartete Label-Anzahl ({len(priority_list)}).")
+                    is_generic_label = False  # Patch konnte nicht angewendet werden
 
-                # --- NEUER PATCH ---
-                # Prüfe, ob die Labels generisch sind (z.B. 'LABEL_0')
-                is_generic_label = False
-                if not priority_list or priority_list[0].startswith("LABEL_"):
-                    is_generic_label = True
-                    # Wenn ja, überschreibe sie mit der Standard-Liste
-                    if len(priority_list) == len(DEFAULT_PRIORITY_ORDER):
-                        priority_list = DEFAULT_PRIORITY_ORDER
-                    else:
-                        # Fallback für Modelle mit anderer Label-Anzahl (z.B. 3)
-                        # Wir können die Namen nicht erraten, also behalten wir 'LABEL_0'
-                        print(
-                            f"⚠️ Warnung: {path} hat generische Labels UND eine unerwartete Label-Anzahl ({len(priority_list)}).")
-                        # In diesem Fall werden 'LABEL_0' etc. beibehalten.
-                        is_generic_label = False  # Zurücksetzen, da wir den Patch nicht anwenden konnten
-                # --- ENDE PATCH ---
+            # 2. Metriken (Optional)
+            # Versuche, die Metriken aus dem *letzten* Checkpoint zu laden
+            best_metric_val = "N/A"
+            metric_name = "N/A"
 
-                # 2. Metriken (Trainer-Status) lesen (aus dem Checkpoint-Ordner)
-                with open(state_path, 'r', encoding='utf-8') as f:
-                    state = json.load(f)
+            checkpoints = [
+                d for d in os.listdir(path)
+                if d.startswith("checkpoint-") and os.path.isdir(os.path.join(path, d))
+            ]
 
-                best_metric_val = state.get("best_metric", 0.0)
-                metric_name = state.get("metric_for_best_model", "best_metric (unbekannt)")
+            if checkpoints:
+                try:
+                    checkpoints.sort(key=lambda x: int(x.split('-')[-1]))
+                    last_checkpoint_dir = checkpoints[-1]
+                    state_path = os.path.join(path, last_checkpoint_dir, "trainer_state.json")
 
-                available_models.append({
-                    "path": path,
-                    "metric_val": best_metric_val,
-                    "metric_name": metric_name,
-                    "labels": priority_list,
-                    "is_generic_label": is_generic_label  # Speichern, ob wir den Patch angewendet haben
-                })
-            except Exception as e:
-                print(f"Fehler beim Lesen der Konfiguration von {path}: {e}")
+                    if os.path.exists(state_path):
+                        with open(state_path, 'r', encoding='utf-8') as f:
+                            state = json.load(f)
+                        best_metric_val = state.get("best_metric", 0.0)
+                        metric_name = state.get("metric_for_best_model", "best_metric")
+                except Exception:
+                    # Wenn das Lesen des Status fehlschlägt, ist es nicht schlim
+                    metric_name = "Fehler beim Lesen"
+
+            available_models.append({
+                "path": path,
+                "metric_val": best_metric_val,
+                "metric_name": metric_name,
+                "labels": priority_list,
+                "is_generic_label": is_generic_label,
+                "max_len": max_len  # NEU: Speichere die max_len
+            })
+        except Exception as e:
+            print(f"Fehler beim Lesen der Konfiguration von {path}: {e}")
 
     return available_models
 
@@ -451,28 +457,38 @@ def find_available_models():
 def select_model(models):
     """
     Zeigt dem Benutzer die gefundenen Modelle an und lässt ihn eines auswählen.
-
-    KORRIGIERT: Stürzt nicht mehr ab, wenn 'models' leer ist.
     """
     if not models:
         print("\n" + "=" * 50)
         print("❌ FEHLER: Keine gültigen, trainierten Modelle gefunden.")
-        print("Stelle sicher, dass die Ordner 'ergebnisse_*' existieren und")
-        print("dass 'config.json' (im Root) und 'trainer_state.json' (in einem checkpoint-Ordner) vorhanden sind.")
+        print("Stelle sicher, dass die Ordner './ergebnisse_*' existieren und")
+        print("dass eine 'config.json' darin enthalten ist.")
         print("\nWarte 10 Sekunden und versuche es erneut...")
         print("=" * 50 + "\n")
         time.sleep(10)
         return None  # Signalisiert dem main-loop, es erneut zu versuchen
 
     print("\n--- Verfügbare trainierte Modelle ---")
+
+    # Sortiere Modelle, sodass die Neuesten (nach Datum im Namen) oben sind
+    try:
+        models.sort(key=lambda x: x['path'], reverse=True)
+    except Exception:
+        pass  # Ignoriere Sortierfehler
+
     for i, model_info in enumerate(models):
         label_count = len(model_info['labels'])
-        metric_str = f"{model_info['metric_name']} = {model_info['metric_val']:.4f}"
+
+        # Metrik formatieren (geht jetzt mit N/A um)
+        if isinstance(model_info['metric_val'], float):
+            metric_str = f"{model_info['metric_name']} = {model_info['metric_val']:.4f}"
+        else:
+            metric_str = f"{model_info['metric_name']} = {model_info['metric_val']}"
+
         labels_str = ", ".join(model_info['labels'])
 
         print(f"\n  [{i + 1}] {model_info['path']}")
 
-        # NEU: Warnung anzeigen, wenn Labels gepatcht wurden
         if model_info.get("is_generic_label"):
             print(
                 f"      Labels ({label_count}): {labels_str}  <- [!] WARNUNG: config.json war fehlerhaft, Labels wurden ersetzt.")
@@ -480,6 +496,7 @@ def select_model(models):
             print(f"      Labels ({label_count}): {labels_str}")
 
         print(f"      Metrik: {metric_str}")
+        print(f"      Max. Tokenlänge: {model_info['max_len']}")
 
     while True:
         try:
@@ -503,13 +520,8 @@ def select_model(models):
 def main():
     """
     Haupt-Startpunkt des Skripts.
-    1. Lädt Vokabulare (wird als geteilt angenommen).
-    2. Sucht und lässt den Benutzer ein Modell auswählen.
-    3. Lädt das Modell.
-    4. Startet das Untermenü (Chat / Validierung).
-    5. Kehrt zur Modellauswahl zurück, wenn das Untermenü verlassen wird.
     """
-    # 1. Vokabulare einmalig laden (wird von allen Modellen geteilt)
+    # 1. Vokabulare einmalig laden
     try:
         vocabs = load_vocab_from_csvs()
     except Exception as e:
@@ -526,16 +538,18 @@ def main():
 
         MODEL_PATH = selected_model_info["path"]
         PRIORITY_ORDER = selected_model_info["labels"]
+        MAX_LEN = selected_model_info["max_len"]  # NEU
 
         # 3. Ausgewähltes Modell laden
-        try:
-            model, tokenizer, device = load_model_and_tokenizer(MODEL_PATH)
-        except Exception as e:
-            print(f"Kritischer Fehler beim Laden des Modells {MODEL_PATH}: {e}")
-            continue
+        model, tokenizer, device = load_model_and_tokenizer(MODEL_PATH)
 
-            # 4. Starte das Untermenü mit den geladenen, modellspezifischen Daten
-        main_menu(model, tokenizer, device, vocabs, PRIORITY_ORDER)
+        if model is None:
+            print(f"Fehler beim Laden von {MODEL_PATH}. Kehre zur Auswahl zurück.")
+            time.sleep(2)
+            continue  # Kehre zur Modellauswahl zurück
+
+        # 4. Starte das Untermenü mit den geladenen, modellspezifischen Daten
+        main_menu(model, tokenizer, device, vocabs, PRIORITY_ORDER, MAX_LEN)
 
 
 if __name__ == "__main__":
