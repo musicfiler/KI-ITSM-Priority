@@ -1,0 +1,897 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <title>Training Dashboard v6 — Per-Class + Benchmark (XHTML-kompatibel)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    /* Grundlayout */
+    :root{
+      --bg:#071025; --panel:#0b1220; --console-bg:#02111a;
+      --muted:#9fb7c9; --accent:#9ad3ff;
+      --c-loss:#ff6b6b; --c-perf:#10b981; --c-through:#60a5fa; --c-sched:#f59e0b; --c-grad:#d946ef;
+    }
+    html,body{height:100%; margin:0; font-family:Inter, Roboto, "Segoe UI", Arial; background:var(--bg); color:#e6eef6;}
+    .header{padding:12px 16px; display:flex; gap:12px; align-items:center; border-bottom:1px solid rgba(255,255,255,0.02)}
+    .title{font-weight:700; color:var(--accent)}
+    .container{display:flex; height:calc(100vh - 56px); gap:12px; padding:12px;}
+    /* Left panel = file area, resizable with draggable vertical splitter */
+    .left-panel{width:420px; min-width:160px; max-width:80%; background:var(--panel); border-radius:10px; padding:12px; display:flex; flex-direction:column; box-shadow:0 6px 18px rgba(0,0,0,0.6)}
+    .splitter{width:8px; cursor:col-resize; background:transparent; display:flex; align-items:center; justify-content:center}
+    .splitter .bar{width:3px; height:40px; background:rgba(255,255,255,0.03); border-radius:2px}
+    .right-panel{flex:1; background:var(--panel); border-radius:10px; padding:12px; box-shadow:0 6px 18px rgba(0,0,0,0.6); display:flex; flex-direction:column}
+    /* left content */
+    .controls{display:flex; gap:8px; align-items:center; margin-bottom:8px}
+    .btn{background:#071827;border:1px solid rgba(255,255,255,0.03); color:var(--muted); padding:8px 10px; border-radius:8px; cursor:pointer}
+    .btn.primary{background:linear-gradient(90deg,#2ea0ff,#0dd3b0); color:#02111a; border:none}
+    .drop{border:2px dashed rgba(255,255,255,0.03); border-radius:8px; padding:10px; color:var(--muted); text-align:center}
+    .file-list{margin-top:8px; overflow:auto; flex:0 0 150px; border-radius:6px; padding:6px; background:#061018}
+    .file-item{padding:6px 8px; border-radius:6px; display:flex; gap:8px; align-items:center; cursor:pointer}
+    .file-item:hover{background:rgba(255,255,255,0.02)}
+    .file-item .sw{width:12px;height:12px;border-radius:4px}
+    .console{margin-top:8px; background:var(--console-bg); border-radius:8px; padding:10px; flex:1; overflow:auto; font-family:monospace; font-size:12px; white-space:pre-wrap; color:#dbeefd}
+    /* right content */
+    .toolbar{display:flex; gap:8px; align-items:center; margin-bottom:8px; flex-wrap:wrap;}
+    .mode-select{display:flex; gap:6px}
+    .metric-tabs{display:flex; gap:6px; overflow:auto; padding-bottom:6px; margin-bottom:6px}
+    .metric-tab{padding:8px 10px; border-radius:8px; background:#06121a; color:var(--muted); cursor:pointer; border:1px solid rgba(255,255,255,0.02)}
+    .metric-tab.active{background:linear-gradient(90deg,#072034,#0b2c3f); color:#dff7ff}
+    .charts-area{flex:1; overflow:auto; display:flex; flex-direction:column; gap:10px}
+    .chart-card{background:linear-gradient(180deg,#071827,#021016); border:1px solid rgba(255,255,255,0.03); padding:8px; border-radius:8px}
+    .chart-row{display:flex; gap:10px; align-items:stretch}
+    /* --- v6: Styling für Chart-Größe (Default) --- */
+    .chart-canvas{background:transparent; border-radius:6px; flex:1; min-height:380px; max-height:720px}
+    .small{font-size:13px; color:var(--muted)}
+    .legend{display:flex; gap:8px; flex-wrap:wrap}
+    .legend .item{display:flex; gap:8px; align-items:center; color:var(--muted); font-size:13px}
+    .color-swatch{width:12px;height:12px;border-radius:3px}
+    /* grid small-multiples */
+    .small-multiples{display:grid; gap:10px}
+    /* responsiveness */
+    @media (max-width:1000px){ .container{flex-direction:column} .left-panel{width:100%; min-width:auto} .splitter{display:none} .right-panel{width:100%} }
+  </style>
+  
+  <style id="dynamicChartSize"></style>
+  
+</head>
+<body>
+  <div class="header">
+    <div class="title">Training Dashboard v6 — Benchmark & Per-Class (XHTML)</div>
+    <div class="small" style="margin-left:8px">Vergleichsmodus mit Benchmark-Balken, Per-Klassen-Linien & skalierbaren Graphen</div>
+  </div>
+
+  <div class="container" id="mainContainer">
+    <div class="left-panel" id="leftPanel">
+      <div class="controls">
+        <label class="btn" for="fileInput">Dateien öffnen</label>
+        <input id="fileInput" type="file" accept=".txt,.log,.json" multiple style="display:none" />
+        <button class="btn primary" id="parseBtn">Parsen & Anzeigen</button>
+        <button class="btn" id="clearBtn">Alle entfernen</button>
+      </div>
+
+      <div id="dropzone" class="drop">Dateien hierher ziehen (Mehrfachauswahl möglich)</div>
+
+      <div class="file-list" id="fileList"></div>
+
+      <div class="console" id="console">Kopiere oder lade hier deine Log-Dateien hinein. Dann "Parsen & Anzeigen".</div>
+    </div>
+
+    <div class="splitter" id="splitter"><div class="bar"></div></div>
+
+    <div class="right-panel">
+      <div class="toolbar">
+        <div class="mode-select">
+          <label class="small">Darstellungsmodus:</label>
+          <button class="btn" id="modeOverlay">Overlay (kombiniert)</button>
+          <button class="btn" id="modeGrid">Nebeneinander</button>
+        </div>
+
+        <div style="margin-left:12px" class="small">Instanzen:</div>
+        <div id="instanceLegend" class="legend" style="margin-left:6px"></div>
+
+        <div style="margin-left:auto; display:flex; gap:8px; align-items:center;">
+          <div class="small">Graph-Höhe (px):</div>
+          <input id="chartHeightMin" type="number" value="380" style="width:50px; background:#071827; color:var(--muted); border:1px solid #06121a; border-radius:6px; padding: 4px;" />
+          <input id="chartHeightMax" type="number" value="720" style="width:50px; background:#071827; color:var(--muted); border:1px solid #06121a; border-radius:6px; padding: 4px;" />
+          <button class="btn" id="applySizeBtn">Anwenden</button>
+          
+          <button class="btn" id="exportAllPNG">Export All PNG</button>
+          <button class="btn" id="exportAllJSON">Export Data JSON</button>
+        </div>
+      </div>
+
+      <div class="metric-tabs" id="metricTabs"></div>
+
+      <div class="charts-area" id="chartsArea">
+        </div>
+    </div>
+  </div>
+
+<script>
+/* ========= Dashboard v6 (Single-file) =========
+ - v4: Resizable panel, Drag & Drop, Multi-file, Overlay/Grid, Export
+ - v5: Added Per-Class metric grouping
+   - Automatically detects keys like 'eval_f1_critical', 'eval_f1_high' etc.
+   - Bundles them into virtual tabs: 'per_class_f1', 'per_class_recall', 'per_class_precision'
+ - v6: Added Summary Benchmark & Resizable Graphs
+   - Identifies summary metrics (train_loss, train_runtime, etc.)
+   - Creates a 'summary_benchmark' tab with a BAR chart comparing the *last* value of these metrics across instances.
+   - Removes these summary metrics from the standard line chart tabs.
+   - Adds inputs to toolbar to set min/max height of chart canvases.
+=========================================== */
+
+/* Metric info (short) */
+const METRIC_INFO = {
+  epoch: { name:'epoch', desc:'Epoch number (vollständige Durchläufe)', tip:'Aggregationseinheit' },
+  train_loss: { name:'train_loss', desc:'Train Loss', tip:'Soll sinken; hoher Wert => Modell passt schlecht' },
+  eval_loss: { name:'eval_loss', desc:'Eval Loss', tip:'Validierungsverlust; wichtig zum Erkennen von Overfitting' },
+  eval_accuracy: { name:'eval_accuracy', desc:'Accuracy', tip:'Anteil korrekter Vorhersagen' },
+  eval_f1_weighted: { name:'eval_f1_weighted', desc:'F1 (Weighted)', tip:'Gewichtetes harmonisches Mittel' },
+  eval_f1: { name:'eval_f1', desc:'F1', tip:'Harmonisches Mittel von Precision & Recall' },
+  eval_precision: { name:'eval_precision', desc:'Precision', tip:'Hohe Precision => wenige False Positives' },
+  eval_recall: { name:'eval_recall', desc:'Recall', tip:'Hohe Recall => wenige False Negatives' },
+  grad_norm: { name:'grad_norm', desc:'Gradient Norm', tip:'Große Spitzen können problematisch sein; clipping prüfen' },
+  learning_rate: { name:'learning_rate', desc:'Learning Rate', tip:'Scheduler-Verlauf sichtbar' },
+  train_samples_per_second: { name:'train_samples_per_second', desc:'Train Samples/s', tip:'Durchsatz beim Training' },
+  train_steps_per_second: { name:'train_steps_per_second', desc:'Train Steps/s', tip:'Schritte pro Sekunde beim Training' },
+  eval_samples_per_second: { name:'eval_samples_per_second', desc:'Eval Samples/s', tip:'Durchsatz bei der Evaluierung' },
+  eval_steps_per_second: { name:'eval_steps_per_second', desc:'Eval Steps/s', tip:'Eval Steps pro Sekunde' },
+  train_runtime: { name:'train_runtime', desc:'Train Runtime', tip:'Gesamtzeit' },
+
+  // --- v5: Per-Klassen-Metriken ---
+  per_class_f1: { name:'per_class_f1', desc:'Per-Klassen F1-Score', tip:'F1-Score (harmonisches Mittel) für jede Klasse einzeln.' },
+  per_class_recall: { name:'per_class_recall', desc:'Per-Klassen Recall', tip:'Recall (Trefferquote) für jede Klasse einzeln.' },
+  per_class_precision: { name:'per_class_precision', desc:'Per-Klassen Precision', tip:'Precision (Genauigkeit) für jede Klasse einzeln.' },
+
+  // --- v6: Summary Benchmark ---
+  summary_benchmark: { name:'summary_benchmark', desc:'Summary Benchmark (Finale Werte)', tip:'Vergleich der finalen Trainingsmetriken (Laufzeit, Durchsatz, End-Loss) als Balkendiagramm.' },
+
+  // Einzelmetriken (für Tooltips)
+  eval_f1_critical: { name:'eval_f1_critical', desc:'F1 (Critical)', tip:'' },
+  eval_f1_high: { name:'eval_f1_high', desc:'F1 (High)', tip:'' },
+  // ... (restliche per-class metriken)
+};
+
+/* colors for instances */
+const INSTANCE_COLORS = [
+  '#ff6b6b','#10b981','#60a5fa','#f59e0b','#d946ef','#4ade80','#7c3aed','#06b6d4','#f97316','#ff8c00'
+];
+
+// --- v5: Definition der Per-Klassen-Gruppen ---
+const PER_CLASS_METRICS = {
+  'per_class_f1': {
+    title: 'Per-Class F1-Scores',
+    keys: ['eval_f1_critical', 'eval_f1_high', 'eval_f1_medium', 'eval_f1_low', 'eval_f1_very_low'],
+    labels: ['F1 Critical', 'F1 High', 'F1 Medium', 'F1 Low', 'F1 Very Low']
+  },
+  'per_class_recall': {
+    title: 'Per-Class Recall',
+    keys: ['eval_recall_critical', 'eval_recall_high', 'eval_recall_medium', 'eval_recall_low', 'eval_recall_very_low'],
+    labels: ['Recall Critical', 'Recall High', 'Recall Medium', 'Recall Low', 'Recall Very Low']
+  },
+  'per_class_precision': {
+    title: 'Per-Class Precision',
+    keys: ['eval_precision_critical', 'eval_precision_high', 'eval_precision_medium', 'eval_precision_low', 'eval_precision_very_low'],
+    labels: ['Precision Critical', 'Precision High', 'Precision Medium', 'Precision Low', 'Precision Very Low']
+  }
+};
+
+// --- v6: Definition der Summary-Benchmark-Metriken ---
+const SUMMARY_METRICS = {
+  'summary_benchmark': {
+    title: 'Summary Benchmark',
+    // Diese Keys werden als Balken dargestellt
+    keys: ['train_loss', 'train_runtime', 'train_samples_per_second', 'train_steps_per_second'],
+    // Labels für die Balken
+    labels: ['Final Train Loss', 'Total Runtime (s)', 'Train Samples/s', 'Train Steps/s']
+  }
+};
+// --- ENDE v6 ---
+
+
+let instances = []; // {id, name, color, parsedMetrics: [obj,...], rawText}
+let metricKeys = []; // discovered metrics (union)
+let activeMetric = null;
+let displayMode = 'overlay'; // or 'grid'
+let charts = {}; // Chart.js instances keyed by metric + mode (combined / per-instance grid canvas ids)
+
+const fileInput = document.getElementById('fileInput');
+const dropzone = document.getElementById('dropzone');
+const fileListEl = document.getElementById('fileList');
+const consoleEl = document.getElementById('console');
+const parseBtn = document.getElementById('parseBtn');
+const clearBtn = document.getElementById('clearBtn');
+const metricTabsEl = document.getElementById('metricTabs');
+const chartsArea = document.getElementById('chartsArea');
+const modeOverlayBtn = document.getElementById('modeOverlay');
+const modeGridBtn = document.getElementById('modeGrid');
+const instanceLegend = document.getElementById('instanceLegend');
+const exportAllPNG = document.getElementById('exportAllPNG');
+const exportAllJSON = document.getElementById('exportAllJSON');
+// v6: Size controls
+const chartHeightMinInp = document.getElementById('chartHeightMin');
+const chartHeightMaxInp = document.getElementById('chartHeightMax');
+const applySizeBtn = document.getElementById('applySizeBtn');
+const dynamicStyleEl = document.getElementById('dynamicChartSize');
+
+/* ---------- splitter for resizing left panel ---------- */
+const splitter = document.getElementById('splitter');
+const leftPanel = document.getElementById('leftPanel');
+let isDragging = false;
+splitter.addEventListener('mousedown', e => { isDragging = true; document.body.style.cursor='col-resize'; });
+document.addEventListener('mouseup', e => { isDragging = false; document.body.style.cursor='default'; });
+document.addEventListener('mousemove', e => {
+  if(!isDragging) return;
+  const containerRect = document.getElementById('mainContainer').getBoundingClientRect();
+  let newWidth = e.clientX - containerRect.left;
+  newWidth = Math.max(160, Math.min(newWidth, containerRect.width*0.8));
+  leftPanel.style.width = newWidth + 'px';
+});
+
+/* ---------- file loading (drag/drop + input) ---------- */
+fileInput.addEventListener('change', e => {
+  const files = Array.from(e.target.files || []);
+  loadFiles(files);
+  fileInput.value = '';
+});
+dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.style.borderColor = '#2ea0ff'; });
+dropzone.addEventListener('dragleave', e => { dropzone.style.borderColor = 'rgba(255,255,255,0.03)'; });
+dropzone.addEventListener('drop', e => {
+  e.preventDefault(); dropzone.style.borderColor = 'rgba(255,255,255,0.03)';
+  const files = Array.from(e.dataTransfer.files || []);
+  loadFiles(files);
+});
+
+function loadFiles(files){
+  for(const f of files){
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const raw = ev.target.result;
+      addInstance(f.name, raw);
+    };
+    reader.readAsText(f, 'utf-8');
+  }
+}
+
+/* ---------- parsing logic (robust) ---------- */
+function parseMetricsFromText(raw){
+  if(!raw || raw.trim().length===0) return [];
+  // 1) try JSON parse (array)
+  try{
+    const j = JSON.parse(raw);
+    if(Array.isArray(j) && j.length && typeof j[0] === 'object') return j;
+  }catch(e){}
+  // 2) find JSON-like objects containing 'epoch'
+  const objRegex = /\{[^}]*"epoch"\s*:\s*[\d.]+[^}]*\}|\{[^}]*'epoch'\s*:\s*[\d.]+[^}]*\}/g;
+  const matches = raw.match(objRegex) || [];
+  const parsed = [];
+  for(const m of matches){
+    let j2 = m.replace(/'/g,'"');
+    j2 = j2.replace(/,(\s*})/g,'$1');
+    try{
+      const obj = JSON.parse(j2);
+      parsed.push(obj);
+    }catch(e){
+      // ignore
+    }
+  }
+  // 3) fallback: scan lines looking for key: value pairs and group by epoch occurrence
+  if(parsed.length===0){
+    const lines = raw.split(/\r?\n/);
+    let current = {};
+    for(const ln of lines){
+      const regex = /['"]?([a-zA-Z0-9_]+)['"]?\s*[:=]\s*([-+]?[0-9]*\.?[0-9]+(?:e[-+]?\d+)?)/g;
+      let m;
+      let changed=false;
+      while((m = regex.exec(ln)) !== null){
+        const k = m[1]; const v = parseFloat(m[2]);
+        // v6: 'loss' ist oft 'train_loss' in HF logs
+        if (k === 'loss') {
+            current['train_loss'] = v;
+        } else {
+            current[k] = v;
+        }
+        changed=true;
+      }
+      if(changed && current.epoch!==undefined){
+        parsed.push(Object.assign({}, current));
+        current = {};
+      }
+    }
+  }
+  // v6: 'loss' zu 'train_loss' normalisieren, falls 'train_loss' nicht existiert
+  parsed.forEach(p => {
+    if (p.loss !== undefined && p.train_loss === undefined) {
+        p.train_loss = p.loss;
+    }
+  });
+  return parsed;
+}
+
+/* ---------- instance management ---------- */
+function addInstance(name, raw){
+  const id = instances.length;
+  const color = INSTANCE_COLORS[id % INSTANCE_COLORS.length];
+  const parsed = parseMetricsFromText(raw);
+  instances.push({ id, name, color, parsedMetrics: parsed, rawText: raw, visible:true });
+  consoleEl.textContent = (consoleEl.textContent ? consoleEl.textContent + "\n\n" : "") + `--- ${name} ---\n` + raw.slice(0,2000);
+  updateUIAfterAdd();
+}
+
+function renderFileList(){
+  fileListEl.innerHTML='';
+  instances.forEach(inst=>{
+    const div = document.createElement('div'); div.className='file-item';
+    div.innerHTML = `<div class="sw" style="background:${inst.color}"></div>
+      <div style="flex:1">${escapeHtml(inst.name)}</div>
+      <div><button class="btn" onclick="toggleVisibleByName('${inst.name.replace(/'/g,"\\'")}')">toggle</button></div>
+      <div><button class="btn" onclick="removeByName('${inst.name.replace(/'/g,"\\'")}')">remove</button></div>`;
+    fileListEl.appendChild(div);
+  });
+}
+
+function renderInstanceLegend(){
+  instanceLegend.innerHTML='';
+  instances.forEach(inst=> {
+    const el = document.createElement('div'); el.className='item';
+    el.innerHTML = `<div class="color-swatch" style="background:${inst.color}"></div><div class="small">${escapeHtml(inst.name)}</div>`;
+    instanceLegend.appendChild(el);
+  });
+}
+function toggleVisibleByName(name){
+  const inst = instances.find(i=>i.name===name); if(inst){ inst.visible = !inst.visible; renderChartsForActiveMetric(); }
+}
+function removeByName(name){ instances = instances.filter(i=>i.name!==name); renderFileList(); renderInstanceLegend(); discoverMetrics(); renderChartsForActiveMetric(); }
+
+function updateUIAfterAdd(){
+  renderFileList();
+  renderInstanceLegend();
+  discoverMetrics();
+  renderChartsForActiveMetric();
+}
+
+/* ---------- metric discovery & tabs ---------- */
+function discoverMetrics(){
+  const set = new Set();
+  instances.forEach(inst=>{
+    inst.parsedMetrics.forEach(obj => {
+      Object.keys(obj).forEach(k => set.add(k));
+    });
+  });
+
+  let allKeys = Array.from(set);
+  const virtualMetricsToAdd = [];
+  const keysToFilterOut = new Set();
+  
+  // --- v5: Per-Klassen-Metriken bündeln ---
+  Object.keys(PER_CLASS_METRICS).forEach(virtualKey => {
+    const group = PER_CLASS_METRICS[virtualKey];
+    const hasAny = group.keys.some(k => set.has(k));
+    if (hasAny) {
+      virtualMetricsToAdd.push(virtualKey);
+      group.keys.forEach(k => keysToFilterOut.add(k));
+    }
+  });
+
+  // --- v6: Summary-Benchmark-Metriken bündeln ---
+  Object.keys(SUMMARY_METRICS).forEach(virtualKey => {
+    const group = SUMMARY_METRICS[virtualKey];
+    const hasAny = group.keys.some(k => set.has(k));
+    if (hasAny) {
+      virtualMetricsToAdd.push(virtualKey);
+      group.keys.forEach(k => keysToFilterOut.add(k));
+    }
+  });
+  // --- ENDE v6 ---
+
+  // Filter individual keys
+  allKeys = allKeys.filter(k => !keysToFilterOut.has(k));
+  // Add grouped keys
+  allKeys = allKeys.concat(virtualMetricsToAdd);
+  
+  metricKeys = allKeys.sort((a,b)=>{
+    if(a==='epoch') return -1; if(b==='epoch') return 1;
+    // v6: Pin summary to front
+    if(a.startsWith('summary')) return -1;
+    if(b.startsWith('summary')) return 1;
+    if(a.startsWith('per_class')) return -1;
+    if(b.startsWith('per_class')) return 1;
+    if(a.startsWith('eval_') && !b.startsWith('eval_')) return -1;
+    if(!a.startsWith('eval_') && b.startsWith('eval_')) return 1;
+    return a.localeCompare(b);
+  });
+  
+  if(metricKeys.length===0) metricKeys = ['eval_loss','eval_accuracy','eval_f1','train_loss','grad_norm','learning_rate','train_samples_per_second','train_steps_per_second','eval_samples_per_second','eval_steps_per_second'];
+  renderMetricTabs();
+}
+
+function renderMetricTabs(){
+  metricTabsEl.innerHTML='';
+  metricKeys.forEach((k,i)=>{
+    const t = document.createElement('div');
+    t.className='metric-tab' + (i===0 ? ' active' : '');
+    t.textContent = k;
+    t.dataset.key = k;
+    t.onclick = ()=> {
+      document.querySelectorAll('.metric-tab').forEach(x=>x.classList.remove('active'));
+      t.classList.add('active');
+      activeMetric = k;
+      renderChartsForActiveMetric();
+    };
+    metricTabsEl.appendChild(t);
+  });
+  // v6: Handle case where all metrics might be virtual
+  if (metricKeys.length > 0 && (!activeMetric || !metricKeys.includes(activeMetric))) {
+    activeMetric = metricKeys[0];
+    document.querySelector('.metric-tab').classList.add('active');
+  }
+}
+
+/* ---------- chart rendering ---------- */
+function clearChartsArea(){
+  chartsArea.innerHTML='';
+  charts = {};
+}
+function renderChartsForActiveMetric(){
+  if(!activeMetric) return;
+  clearChartsArea();
+  // Top: title and info
+  const infoCard = document.createElement('div'); infoCard.className='chart-card';
+  const infoHtml = `<div style="display:flex;justify-content:space-between;align-items:center">
+    <div>
+      <div style="font-weight:700">${escapeHtml(activeMetric)}</div>
+      <div class="small">${METRIC_INFO[activeMetric]?.desc || 'Zeitreihe'}</div>
+      <div class="small" style="margin-top:6px">${METRIC_INFO[activeMetric]?.tip || ''}</div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn" id="exportMetricPNG">Export PNG</button>
+      <button class="btn" id="exportMetricJSON">Export JSON</button>
+    </div>
+  </div>`;
+  infoCard.innerHTML = infoHtml;
+  chartsArea.appendChild(infoCard);
+
+  // --- v6: Logik-Weiche für Benchmark-Balken ---
+  const isBenchmark = SUMMARY_METRICS[activeMetric];
+  if (isBenchmark) {
+    renderBenchmarkBarChart(isBenchmark);
+    updateDisplayModeUI(); // v6: Hide overlay/grid buttons for benchmark
+    return;
+  }
+  // --- ENDE v6 ---
+
+
+  // Combined overlay chart
+  const combinedCard = document.createElement('div'); combinedCard.className='chart-card';
+  const combinedRow = document.createElement('div'); combinedRow.className='chart-row';
+  const canvasId = 'combined_' + activeMetric.replace(/[^a-z0-9]/gi,'_');
+  combinedRow.innerHTML = `<canvas id="${canvasId}" class="chart-canvas"></canvas>`;
+  combinedCard.appendChild(combinedRow);
+  chartsArea.appendChild(combinedCard);
+
+  // Grid small-multiples container (per instance)
+  const gridCard = document.createElement('div'); gridCard.className='chart-card';
+  const gridTitle = `<div style="font-weight:700; margin-bottom:8px">Nebeneinander: Instanzen</div>`;
+  const gridContent = document.createElement('div'); gridContent.className='small-multiples';
+  gridCard.innerHTML = gridTitle; gridCard.appendChild(gridContent);
+  chartsArea.appendChild(gridCard);
+
+  // prepare combined dataset
+  const labels = [];
+  const datasets = [];
+  const useEpoch = instances.some(inst => inst.parsedMetrics.some(m=> m.epoch !== undefined));
+
+  const epochSet = new Set();
+  if(useEpoch){
+    instances.forEach(inst => inst.parsedMetrics.forEach(m => { if(m.epoch!==undefined) epochSet.add(Number(m.epoch)); }));
+  }
+  const unionEpochs = useEpoch ? Array.from(epochSet).sort((a,b)=>a-b) : null;
+
+  // --- v5: Logik-Weiche für Per-Class vs Standard ---
+  const isPerClass = PER_CLASS_METRICS[activeMetric];
+
+  // create dataset per instance
+  instances.forEach((inst, idx) => {
+    const visible = inst.visible !== false;
+    
+    if (isPerClass) {
+      // --- v5: Per-Class-Logik für Combined Chart ---
+      isPerClass.keys.forEach((key, keyIdx) => {
+        if (!inst.parsedMetrics.some(m => m[key] !== undefined)) return;
+        const label = `${inst.name} - ${isPerClass.labels[keyIdx]}`;
+        const color = generateVariantColor(inst.color, keyIdx, isPerClass.keys.length);
+        
+        if (useEpoch) {
+          const map = new Map(); inst.parsedMetrics.forEach(m => { if(m.epoch!==undefined && m[key]!==undefined) map.set(Number(m.epoch), m[key]); });
+          const data = unionEpochs.map(e => map.has(e) ? map.get(e) : null);
+          datasets.push({ label: label, data, borderColor: color, backgroundColor: hexToRgba(color,0.1), spanGaps:true, hidden: !visible, borderWidth: 1.5 });
+        } else {
+          const data = inst.parsedMetrics.map(m => m[key]!==undefined ? m[key] : null);
+          const labelsLocal = inst.parsedMetrics.map((m,i)=> i+1);
+          if(labelsLocal.length > labels.length) { labels.length = labelsLocal.length; for(let i=0;i<labelsLocal.length;i++) if(!labels[i]) labels[i] = labelsLocal[i]; }
+          datasets.push({ label: label, data, borderColor: color, backgroundColor: hexToRgba(color,0.1), spanGaps:true, hidden: !visible, borderWidth: 1.5 });
+        }
+      });
+      
+    } else {
+      // --- Standard-Logik (v4) ---
+      if(useEpoch){
+        const map = new Map(); inst.parsedMetrics.forEach(m => { if(m.epoch!==undefined && m[activeMetric]!==undefined) map.set(Number(m.epoch), m[activeMetric]); });
+        const data = unionEpochs.map(e => map.has(e) ? map.get(e) : null);
+        datasets.push({ label: inst.name, data, borderColor: inst.color, backgroundColor: hexToRgba(inst.color,0.12), spanGaps:true, hidden: !visible });
+      } else {
+        const data = inst.parsedMetrics.map(m => m[activeMetric]!==undefined ? m[activeMetric] : null);
+        const labelsLocal = inst.parsedMetrics.map((m,i)=> i+1);
+        if(labelsLocal.length > labels.length) { labels.length = labelsLocal.length; for(let i=0;i<labelsLocal.length;i++) if(!labels[i]) labels[i] = labelsLocal[i]; }
+        datasets.push({ label: inst.name, data, borderColor: inst.color, backgroundColor: hexToRgba(inst.color,0.12), spanGaps:true, hidden: !visible });
+      }
+    }
+  });
+
+  const combinedLabels = useEpoch ? unionEpochs.map(String) : labels.map(l=> String(l || ''));
+  const ctxCombined = document.getElementById(canvasId).getContext('2d');
+  if(charts[canvasId]) { charts[canvasId].destroy(); }
+  charts[canvasId] = new Chart(ctxCombined, {
+    type: 'line',
+    data: { labels: combinedLabels, datasets },
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      plugins: { legend:{display:true, labels:{color:'#dff7ff'}}, title:{display:false} },
+      scales: { x:{ title:{display:true, text: useEpoch ? 'epoch' : 'index'}, ticks:{color:'#bfe9ff'} }, y:{ ticks:{color:'#bfe9ff'} } }
+    }
+  });
+
+  // wire export buttons
+  document.getElementById('exportMetricPNG').onclick = ()=> exportCanvasPNG(canvasId, activeMetric + '_combined.png');
+  document.getElementById('exportMetricJSON').onclick = ()=> exportMetricJSON(activeMetric);
+
+  // create small multiples: each instance its own canvas
+  gridContent.innerHTML = '';
+  const visibleInstances = instances.filter(i=>true);
+  const cols = Math.min(3, visibleInstances.length || 1);
+  gridContent.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+  
+  visibleInstances.forEach((inst, idx)=>{
+    const wrap = document.createElement('div'); wrap.style.background='transparent';
+    const title = document.createElement('div'); title.style.fontWeight='600'; title.style.marginBottom='6px'; title.textContent = inst.name;
+    const c = document.createElement('canvas'); const cid = 'grid_'+activeMetric.replace(/[^a-z0-9]/gi,'_') + '_' + idx; c.id = cid; c.className='chart-canvas';
+    wrap.appendChild(title); wrap.appendChild(c);
+    gridContent.appendChild(wrap);
+
+    const gridDatasets = [];
+    let labs = [];
+
+    if (isPerClass) {
+        // --- v5: Per-Class-Logik für Grid-Chart ---
+        isPerClass.keys.forEach((key, keyIdx) => {
+            if (!inst.parsedMetrics.some(m => m[key] !== undefined)) return;
+            const label = isPerClass.labels[keyIdx];
+            const color = generateVariantColor(inst.color, keyIdx, isPerClass.keys.length);
+            let dataVals = [];
+            
+            if(useEpoch){
+                const map = new Map(); inst.parsedMetrics.forEach(m => { if(m.epoch!==undefined && m[key]!==undefined) map.set(Number(m.epoch), m[key]); });
+                dataVals = unionEpochs.map(e => map.has(e) ? map.get(e) : null);
+                if(labs.length === 0) labs = unionEpochs.map(String);
+            } else {
+                dataVals = inst.parsedMetrics.map(m=> m[key]!==undefined ? m[key] : null);
+                if(labs.length === 0) labs = dataVals.map((_,i)=> String(i+1));
+            }
+            gridDatasets.push({ label: label, data: dataVals, borderColor: color, backgroundColor: hexToRgba(color,0.1), tension:0.18, spanGaps:true, borderWidth: 1.5 });
+        });
+
+    } else {
+        // --- Standard-Logik (v4) ---
+        let dataVals = [];
+        if(useEpoch){
+            const map = new Map(); inst.parsedMetrics.forEach(m => { if(m.epoch!==undefined && m[activeMetric]!==undefined) map.set(Number(m.epoch), m[activeMetric]); });
+            dataVals = unionEpochs.map(e => map.has(e) ? map.get(e) : null);
+            labs = unionEpochs.map(String);
+        } else {
+            dataVals = inst.parsedMetrics.map(m=> m[activeMetric]!==undefined ? m[activeMetric] : null);
+            labs = dataVals.map((_,i)=> String(i+1));
+        }
+        gridDatasets.push({ label: inst.name, data: dataVals, borderColor: inst.color, backgroundColor: hexToRgba(inst.color,0.12), tension:0.18, spanGaps:true });
+    }
+
+    const ctx = document.getElementById(cid).getContext('2d');
+    if(charts[cid]) charts[cid].destroy();
+    charts[cid] = new Chart(ctx, {
+      type:'line',
+      data: { labels: labs, datasets: gridDatasets },
+      options: { 
+        responsive:true, maintainAspectRatio:false, 
+        plugins:{ legend:{ display: isPerClass ? true : false, labels:{ color:'#dff7ff' } } }, 
+        scales:{x:{ticks:{color:'#bfe9ff'}}, y:{ticks:{color:'#bfe9ff'}}} 
+      }
+    });
+  });
+
+  updateDisplayModeUI();
+}
+
+// --- NEU v6: Benchmark Bar Chart Renderer ---
+function renderBenchmarkBarChart(benchmark) {
+  const chartCard = document.createElement('div'); chartCard.className='chart-card';
+  const chartRow = document.createElement('div'); chartRow.className='chart-row';
+  const canvasId = 'benchmark_bar_chart';
+  chartRow.innerHTML = `<canvas id="${canvasId}" class="chart-canvas"></canvas>`;
+  chartCard.appendChild(chartRow);
+  chartsArea.appendChild(chartCard);
+
+  const labels = benchmark.labels;
+  const datasets = [];
+
+  // Finde den *letzten* Wert für jede Metrik pro Instanz
+  instances.forEach(inst => {
+    if (inst.visible === false) return;
+    
+    const data = [];
+    benchmark.keys.forEach(key => {
+        // Durchsuche Metriken von hinten nach vorne, um den letzten Wert zu finden
+        let value = null;
+        for (let i = inst.parsedMetrics.length - 1; i >= 0; i--) {
+            if (inst.parsedMetrics[i][key] !== undefined) {
+                value = inst.parsedMetrics[i][key];
+                break;
+            }
+        }
+        data.push(value);
+    });
+    
+    datasets.push({
+        label: inst.name,
+        data: data,
+        backgroundColor: hexToRgba(inst.color, 0.7),
+        borderColor: inst.color,
+        borderWidth: 1
+    });
+  });
+
+  const ctx = document.getElementById(canvasId).getContext('2d');
+  if(charts[canvasId]) { charts[canvasId].destroy(); }
+  charts[canvasId] = new Chart(ctx, {
+    type: 'bar',
+    data: { labels: labels, datasets: datasets },
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      plugins: { 
+        legend:{ display:true, labels:{ color:'#dff7ff' } },
+        title:{ display:true, text: 'Vergleich der finalen Benchmark-Metriken', color: '#dff7ff' }
+      },
+      scales: { 
+        x:{ ticks:{color:'#bfe9ff'} }, 
+        y:{ ticks:{color:'#bfe9ff'}, type: 'logarithmic' } // Log-Skala, da Werte stark variieren (z.B. runtime vs loss)
+      }
+    }
+  });
+
+  // Wire export buttons
+  document.getElementById('exportMetricPNG').onclick = ()=> exportCanvasPNG(canvasId, 'summary_benchmark.png');
+  document.getElementById('exportMetricJSON').onclick = ()=> exportMetricJSON(activeMetric);
+}
+// --- ENDE v6 ---
+
+
+/* ---------- display mode toggles ---------- */
+modeOverlayBtn.addEventListener('click', ()=> { displayMode='overlay'; updateDisplayModeUI(); });
+modeGridBtn.addEventListener('click', ()=> { displayMode='grid'; updateDisplayModeUI(); });
+
+function updateDisplayModeUI(){
+  const cards = Array.from(chartsArea.querySelectorAll('.chart-card'));
+  if(cards.length < 2) return;
+  
+  // v6: Hide toggles if it's a benchmark chart
+  const isBenchmark = SUMMARY_METRICS[activeMetric];
+  if (isBenchmark) {
+    document.querySelector('.mode-select').style.display = 'none';
+    cards.forEach(c => c.style.display = 'block'); // Info-Card und Bar-Chart anzeigen
+    return;
+  }
+  
+  // Standard v5 logic
+  document.querySelector('.mode-select').style.display = 'flex';
+  if(displayMode === 'overlay'){
+    cards.forEach((c,idx)=> {
+      if(idx===1) c.style.display='block';      // Combined Chart
+      else if(idx===2) c.style.display='none'; // Grid Chart
+      else c.style.display = 'block';          // Info Card
+    });
+    modeOverlayBtn.classList.add('active');
+    modeGridBtn.classList.remove('active');
+  } else {
+    cards.forEach((c,idx)=> {
+      if(idx===1) c.style.display='none';       // Combined Chart
+      else if(idx===2) c.style.display='block'; // Grid Chart
+      else c.style.display = 'block';           // Info Card
+    });
+    modeOverlayBtn.classList.remove('active');
+    modeGridBtn.classList.add('active');
+  }
+}
+
+/* ---------- exports ---------- */
+function exportCanvasPNG(canvasId, filename){
+  const canvas = document.getElementById(canvasId);
+  if(!canvas) { alert('Canvas nicht gefunden'); return; }
+  canvas.toBlob(function(blob){
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = filename || 'chart.png'; document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  });
+}
+
+function exportMetricJSON(metric){
+  // v6: Anpassung für Per-Class und Benchmark
+  const isPerClass = PER_CLASS_METRICS[metric];
+  const isBenchmark = SUMMARY_METRICS[metric];
+  
+  let keysToExport = [metric];
+  if (isPerClass) keysToExport = isPerClass.keys;
+  else if (isBenchmark) keysToExport = isBenchmark.keys;
+
+  const payload = instances.map(inst => {
+    const seriesData = {};
+    keysToExport.forEach(k => {
+      // Wenn Benchmark, nur den letzten Wert
+      if (isBenchmark) {
+          let value = null;
+          for (let i = inst.parsedMetrics.length - 1; i >= 0; i--) {
+            if (inst.parsedMetrics[i][k] !== undefined) { value = inst.parsedMetrics[i][k]; break; }
+          }
+          seriesData[k] = value;
+      } else {
+      // Sonst (Line-Chart) die ganze Serie
+        seriesData[k] = inst.parsedMetrics
+          .filter(m => m[k] !== undefined)
+          .map(m => ({ epoch: m.epoch, value: m[k] }));
+      }
+    });
+    return { name: inst.name, color: inst.color, series: seriesData };
+  });
+  
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = metric + '_data.json'; document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+exportAllPNG.addEventListener('click', ()=> {
+  metricKeys.forEach(k => {
+    let canvasId;
+    if (SUMMARY_METRICS[k]) {
+        canvasId = 'benchmark_bar_chart';
+    } else {
+        canvasId = 'combined_' + k.replace(/[^a-z0-9]/gi,'_');
+    }
+    const canvas = document.getElementById(canvasId);
+    if(canvas) exportCanvasPNG(canvasId, k + '_export.png');
+  });
+});
+exportAllJSON.addEventListener('click', ()=> {
+  const payload = {};
+  metricKeys.forEach(k => {
+    // v6: JSON Export Logik für alle Metriken (kombiniert)
+    const isPerClass = PER_CLASS_METRICS[k];
+    const isBenchmark = SUMMARY_METRICS[k];
+    let keysToExport = [k];
+    if (isPerClass) keysToExport = isPerClass.keys;
+    else if (isBenchmark) keysToExport = isBenchmark.keys;
+
+    payload[k] = instances.map(inst => {
+      const seriesData = {};
+      keysToExport.forEach(key => {
+        if (isBenchmark) {
+          let value = null;
+          for (let i = inst.parsedMetrics.length - 1; i >= 0; i--) {
+            if (inst.parsedMetrics[i][key] !== undefined) { value = inst.parsedMetrics[i][key]; break; }
+          }
+          seriesData[key] = value;
+        } else {
+          seriesData[key] = inst.parsedMetrics
+            .filter(m => m[key] !== undefined)
+            .map(m => ({ epoch:m.epoch, value:m[key] }));
+        }
+      });
+      return { name: inst.name, series: seriesData };
+    });
+  });
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = 'all_metrics.json'; document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+});
+
+/* ---------- v6: Chart Size Controls ---------- */
+applySizeBtn.addEventListener('click', () => {
+  const minH = chartHeightMinInp.value || '380';
+  const maxH = chartHeightMaxInp.value || '720';
+  dynamicStyleEl.innerHTML = `
+    .chart-canvas {
+      min-height: ${minH}px !important;
+      max-height: ${maxH}px !important;
+    }
+  `;
+  // Force Chart.js to resize (obwohl dies oft durch CSS-Änderung allein ausgelöst wird)
+  Object.values(charts).forEach(chart => {
+    if (chart && typeof chart.resize === 'function') {
+      chart.resize();
+    }
+  });
+});
+
+
+/* ---------- parse & UI glue ---------- */
+parseBtn.addEventListener('click', ()=> {
+  discoverMetrics();
+  renderChartsForActiveMetric();
+});
+
+clearBtn.addEventListener('click', ()=> {
+  instances = []; metricKeys=[]; activeMetric=null; charts={};
+  fileListEl.innerHTML=''; consoleEl.textContent=''; metricTabsEl.innerHTML=''; chartsArea.innerHTML=''; instanceLegend.innerHTML='';
+});
+
+/* ---------- initial helpers & small utils ---------- */
+function escapeHtml(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function hexToRgba(hex, alpha){ const c = hex.replace('#',''); const r = parseInt(c.substring(0,2),16), g = parseInt(c.substring(2,4),16), b = parseInt(c.substring(4,6),16); return `rgba(${r},${g},${b},${alpha})`; }
+
+// --- v5: Farbvarianten-Generator ---
+function hexToHsl(hex) {
+    const c = hex.replace('#','');
+    const r = parseInt(c.substring(0,2),16) / 255;
+    const g = parseInt(c.substring(2,4),16) / 255;
+    const b = parseInt(c.substring(4,6),16) / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    let h, s, l = (max + min) / 2;
+    if(max === min) { h = s = 0; } 
+    else {
+        const d = max - min;
+        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        switch(max){
+            case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+            case g: h = (b - r) / d + 2; break;
+            case b: h = (r - g) / d + 4; break;
+        }
+        h /= 6;
+    }
+    return [h * 360, s * 100, l * 100];
+}
+
+function generateVariantColor(baseHex, index, total) {
+    const [h, s, l] = hexToHsl(baseHex);
+    const l_variation = (total > 1) ? (index / (total - 1)) * 40 - 20 : 0;
+    let new_l = Math.max(20, Math.min(85, l + l_variation));
+    const s_variation = (index % 2 === 0) ? 10 : -10;
+    let new_s = Math.max(40, Math.min(100, s + s_variation));
+    return `hsl(${h}, ${new_s}%, ${new_l}%)`;
+}
+// --- ENDE v5 ---
+
+
+/* ---------- expose toggle/remove for inline onclick strings ---------- */
+window.toggleVisibleByName = toggleVisibleByName;
+window.removeByName = removeByName;
+
+/* Provide a small demo when page loaded */
+(function initDemo(){
+  const sampleA = `{'loss': 1.1034, 'learning_rate': 1.662e-05, 'epoch': 1.0}
+{'eval_loss': 0.5457, 'eval_accuracy': 0.7959, 'eval_f1_weighted': 0.7916, 'eval_recall_critical': 0.5287, 'eval_precision_critical': 0.7372, 'eval_f1_critical': 0.6158, 'eval_recall_high': 0.8, 'eval_f1_high': 0.7600, 'eval_recall_medium': 0.9274, 'eval_f1_medium': 0.8914, 'eval_recall_low': 0.8439, 'eval_f1_low': 0.8026, 'eval_recall_very_low': 0.7247, 'eval_f1_very_low': 0.8062, 'epoch': 1.0}
+{'loss': 0.4466, 'learning_rate': 3.328e-05, 'epoch': 2.0}
+{'eval_loss': 0.3508, 'eval_accuracy': 0.8535, 'eval_f1_weighted': 0.8501, 'eval_recall_critical': 0.6178, 'eval_precision_critical': 0.8740, 'eval_f1_critical': 0.7239, 'eval_recall_high': 0.9186, 'eval_f1_high': 0.8377, 'eval_recall_medium': 0.9704, 'eval_f1_medium': 0.9232, 'eval_recall_low': 0.8156, 'eval_f1_low': 0.8455, 'eval_recall_very_low': 0.8146, 'eval_f1_very_low': 0.8605, 'epoch': 2.0}
+{'train_runtime': 120.5, 'train_samples_per_second': 10.2, 'train_steps_per_second': 1.5, 'train_loss': 0.4, 'epoch': 2.0}
+`;
+  const sampleB = `{'loss': 1.2, 'learning_rate': 1.662e-05, 'epoch': 1.0}
+{'eval_loss': 0.6, 'eval_accuracy': 0.75, 'eval_f1_weighted': 0.75, 'eval_recall_critical': 0.45, 'eval_precision_critical': 0.70, 'eval_f1_critical': 0.55, 'eval_recall_high': 0.75, 'eval_f1_high': 0.72, 'eval_recall_medium': 0.88, 'eval_f1_medium': 0.84, 'eval_recall_low': 0.80, 'eval_f1_low': 0.76, 'eval_recall_very_low': 0.70, 'eval_f1_very_low': 0.78, 'epoch': 1.0}
+{'loss': 0.5, 'learning_rate': 3.328e-05, 'epoch': 2.0}
+{'eval_loss': 0.4, 'eval_accuracy': 0.82, 'eval_f1_weighted': 0.82, 'eval_recall_critical': 0.55, 'eval_precision_critical': 0.80, 'eval_f1_critical': 0.65, 'eval_recall_high': 0.88, 'eval_f1_high': 0.81, 'eval_recall_medium': 0.95, 'eval_f1_medium': 0.90, 'eval_recall_low': 0.78, 'eval_f1_low': 0.81, 'eval_recall_very_low': 0.79, 'eval_f1_very_low': 0.84, 'epoch': 2.0}
+{'train_runtime': 150.1, 'train_samples_per_second': 8.1, 'train_steps_per_second': 1.2, 'train_loss': 0.51, 'epoch': 2.0}
+`;
+  addInstance('sample_run_A_v6.txt', sampleA);
+  addInstance('sample_run_B_v6.txt', sampleB);
+})();
+
+</script>
+</body>
+</html>

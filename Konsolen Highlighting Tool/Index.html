@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <title>Log Viewer mit Hervorhebung</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; margin: 16px; background:#f6f8fa; color:#111; }
+    .controls { margin-bottom: 12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .dropzone {
+      border: 2px dashed #cfcfcf; background: #fff; padding: 18px; border-radius:8px;
+      min-height: 64px; display:flex; align-items:center; justify-content:center; color:#666;
+    }
+    .dropzone.drag { border-color:#6ea8fe; background:#f0f8ff; color:#0854a2; }
+    #fileInput { display:none; }
+    #viewer { white-space:pre-wrap; font-family: "Courier New", monospace; background:#0f1720; color:#e6eef6; padding:12px; border-radius:6px; overflow:auto; max-height:70vh; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+    .line { display:block; padding:0 6px; }
+    /* Highlight classes */
+    .ts { color:#94a3b8 }            /* timestamps / informational */
+    .info { color:#60a5fa }         /* informational messages */
+    .warning { color:#f59e0b; font-weight:600 } /* warnings */
+    .error { color:#ef4444; font-weight:700 }   /* errors */
+    .success { color:#10b981; font-weight:600 }/* success messages */
+    .progress { color:#a78bfa }     /* progress / percentages */
+    .metric { color:#f472b6 }       /* numeric metrics */
+    .cmd { color:#eab308 }          /* commands / paths */
+    .badge { background: rgba(255,255,255,0.06); padding:2px 6px; border-radius:4px; margin-left:6px; color:#fff; font-size:0.85em; }
+    .small { font-size:0.9em; color:#94a3b8 }
+    /* simple search highlight */
+    mark { background: #fffbdd; color: #663c00; padding:0 2px; border-radius:2px; }
+  </style>
+</head>
+<body>
+  <h3>Log Viewer mit automatischer Hervorhebung</h3>
+
+  <div class="controls">
+    <label class="btn" style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;">
+      <input id="fileInput" type="file" accept=".txt,.log,.out,.log.txt" />
+      <button id="openBtn" type="button">Datei Öffnen</button>
+    </label>
+
+    <button id="clearBtn" type="button">Löschen</button>
+    <span class="small">oder Datei hierher ziehen</span>
+  </div>
+
+  <div id="drop" class="dropzone">Ziehe die Log-/Textdatei hierher oder klicke auf "Datei Öffnen".</div>
+  <div id="viewer" role="region" aria-live="polite"></div>
+
+  <script>
+  $(function () {
+    const $fileInput = $('#fileInput');
+    const $drop = $('#drop');
+    const $viewer = $('#viewer');
+
+    // Öffnen-Button
+    $('#openBtn').on('click', () => $fileInput.trigger('click'));
+    $('#clearBtn').on('click', () => $viewer.empty());
+
+    // Drag & Drop
+    $drop.on('dragenter dragover', function (e) {
+      e.preventDefault(); e.stopPropagation();
+      $(this).addClass('drag');
+    });
+    $drop.on('dragleave drop', function (e) {
+      e.preventDefault(); e.stopPropagation();
+      $(this).removeClass('drag');
+      if (e.type === 'drop') {
+        const files = e.originalEvent.dataTransfer.files;
+        if (files && files.length) readFile(files[0]);
+      }
+    });
+
+    // File input change
+    $fileInput.on('change', function () {
+      const f = this.files && this.files[0];
+      if (f) readFile(f);
+      this.value = '';
+    });
+
+    // Lese Datei und rendern
+    function readFile(file) {
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function (ev) {
+        const text = ev.target.result;
+        renderHighlighted(text);
+      };
+      reader.onerror = function () {
+        $viewer.text('Fehler beim Lesen der Datei.');
+      };
+      reader.readAsText(file, 'utf-8');
+    }
+
+    // Haupt-Hervorhebungsfunktion: Zeile für Zeile einfärben
+    function renderHighlighted(raw) {
+      // Normalisiere Zeilenenden
+      const text = raw.replace(/\r\n/g, '\n');
+      const lines = text.split('\n');
+      const html = lines.map(line => highlightLine(line)).join('\n');
+      $viewer.html(html);
+      // optional: scroll to top
+      $viewer.scrollTop(0);
+    }
+
+    // Wende regex-basierte Highlight-Regeln auf eine Zeile an
+    function highlightLine(line) {
+      if (line.length === 0) return '<span class="line small" style="opacity:0.7"> </span>';
+
+      // Escape HTML first
+      let t = escapeHtml(line);
+
+      // Reihenfolge: spezialisierte Patterns zuerst
+      // 1) Timestamps ISO / e.g. 2025-11-09 13:55:36.899318
+      t = t.replace(/(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)/g, '<span class="ts">$1</span>');
+
+      // 2) Pfade und Befehle (Windows/Unix)
+      t = t.replace(/([A-Za-z]:\\[^\s'"]+|\/[^\s'"]+)/g, '<span class="cmd">$1</span>');
+
+      // 3) WARN / WARNING / WARNUNG / WARNING:...
+      t = t.replace(/\b(WARN(?:ING)?|WARNUNG|WARNING):?/gi, '<span class="warning">$1</span>');
+
+      // 4) ERROR / ERR / CRITICAL / FAILED
+      t = t.replace(/\b(ERROR|ERR|CRITICAL|FAILED|FATAL):?/gi, '<span class="error">$1</span>');
+
+      // 5) INFO / INFO: / I tensorflow / GPU found
+      t = t.replace(/\b(INFO|I)\b(?=:)?/g, '<span class="info">$1</span>');
+      t = t.replace(/\b(GPU gefunden|GPU found|✅|✔️|🎉)\b/g, '<span class="success">$1</span>');
+
+      // 6) Progress bars / percentages / 14%| etc.
+      t = t.replace(/(\b\d{1,3}%\b|\b\d+\/\d+\b|\|\s*[\u2588\u258F\u258D\u258C]+\s*\|?)/g, '<span class="progress">$1</span>');
+
+      // 7) Numeric metrics like eval_loss, eval_accuracy, eval_f1, train_loss, epoch
+      t = t.replace(/\b(eval_loss|eval_accuracy|eval_f1|eval_precision|eval_recall|train_loss|train_runtime|epoch)\b/gi, '<span class="small">$1</span>');
+      t = t.replace(/(\b\d+\.\d{1,6}\b|\b\d{1,3}\.\d+\b|\b\d{1,6}\b)/g, '<span class="metric">$1</span>');
+
+      // 8) Special tokens or badges e.g. ✅, ⚠️
+      t = t.replace(/(✅|⚠️|⚠|🚀|🎉)/g, '<span class="success">$1</span>');
+
+      // 9) Phase / step labels (Phase 1:, Starte..., Speichere...)
+      t = t.replace(/\b(Starte|Starte den|Starte Anreicherung|Speichere|Lade|Fahre|Möchten Sie|Möchten|Logs|Lade das Dataset)\b/gi, '<span class="info">$1</span>');
+
+      // Return with wrapper
+      return '<span class="line">' + t + '</span>';
+    }
+
+    // Helper: HTML-escape
+    function escapeHtml(s) {
+      return s.replace(/[&<>"']/g, function (m) {
+        return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[m];
+      });
+    }
+
+    // OPTIONAL: einfache Suche (Ctrl+F-like) - drücken Sie "/" zum Fokus
+    $(document).on('keydown', function (e) {
+      if (e.key === '/') {
+        e.preventDefault();
+        const q = prompt('Suchen nach (ein Wort oder Regex):');
+        if (q) {
+          const regex = new RegExp(q, 'gi');
+          const html = $viewer.html();
+          // Entferne vorherige <mark>
+          const cleaned = html.replace(/<\/?mark>/g, '');
+          const newHtml = cleaned.replace(regex, (m) => '<mark>' + m + '</mark>');
+          $viewer.html(newHtml);
+        }
+      }
+    });
+
+    // kleine demo: falls Sie bereits Inhalt auf der Seite haben (z.B. angehängter Text),
+    // können Sie ihn hier automatisch laden, indem Sie den raw-Text über renderHighlighted(...) weiterreichen.
+    // Beispiel: renderHighlighted(`... Ihr Text ...`);
+  });
+  </script>
+</body>
+</html>

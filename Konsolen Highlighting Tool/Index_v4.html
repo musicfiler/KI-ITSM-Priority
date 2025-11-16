@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <title>Training Dashboard — Vergleichsmodus (XHTML-kompatibel)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    /* Grundlayout */
+    :root{
+      --bg:#071025; --panel:#0b1220; --console-bg:#02111a;
+      --muted:#9fb7c9; --accent:#9ad3ff;
+      --c-loss:#ff6b6b; --c-perf:#10b981; --c-through:#60a5fa; --c-sched:#f59e0b; --c-grad:#d946ef;
+    }
+    html,body{height:100%; margin:0; font-family:Inter, Roboto, "Segoe UI", Arial; background:var(--bg); color:#e6eef6;}
+    .header{padding:12px 16px; display:flex; gap:12px; align-items:center; border-bottom:1px solid rgba(255,255,255,0.02)}
+    .title{font-weight:700; color:var(--accent)}
+    .container{display:flex; height:calc(100vh - 56px); gap:12px; padding:12px;}
+    /* Left panel = file area, resizable with draggable vertical splitter */
+    .left-panel{width:420px; min-width:160px; max-width:80%; background:var(--panel); border-radius:10px; padding:12px; display:flex; flex-direction:column; box-shadow:0 6px 18px rgba(0,0,0,0.6)}
+    .splitter{width:8px; cursor:col-resize; background:transparent; display:flex; align-items:center; justify-content:center}
+    .splitter .bar{width:3px; height:40px; background:rgba(255,255,255,0.03); border-radius:2px}
+    .right-panel{flex:1; background:var(--panel); border-radius:10px; padding:12px; box-shadow:0 6px 18px rgba(0,0,0,0.6); display:flex; flex-direction:column}
+    /* left content */
+    .controls{display:flex; gap:8px; align-items:center; margin-bottom:8px}
+    .btn{background:#071827;border:1px solid rgba(255,255,255,0.03); color:var(--muted); padding:8px 10px; border-radius:8px; cursor:pointer}
+    .btn.primary{background:linear-gradient(90deg,#2ea0ff,#0dd3b0); color:#02111a; border:none}
+    .drop{border:2px dashed rgba(255,255,255,0.03); border-radius:8px; padding:10px; color:var(--muted); text-align:center}
+    .file-list{margin-top:8px; overflow:auto; flex:0 0 150px; border-radius:6px; padding:6px; background:#061018}
+    .file-item{padding:6px 8px; border-radius:6px; display:flex; gap:8px; align-items:center; cursor:pointer}
+    .file-item:hover{background:rgba(255,255,255,0.02)}
+    .file-item .sw{width:12px;height:12px;border-radius:4px}
+    .console{margin-top:8px; background:var(--console-bg); border-radius:8px; padding:10px; flex:1; overflow:auto; font-family:monospace; font-size:12px; white-space:pre-wrap; color:#dbeefd}
+    /* right content */
+    .toolbar{display:flex; gap:8px; align-items:center; margin-bottom:8px}
+    .mode-select{display:flex; gap:6px}
+    .metric-tabs{display:flex; gap:6px; overflow:auto; padding-bottom:6px; margin-bottom:6px}
+    .metric-tab{padding:8px 10px; border-radius:8px; background:#06121a; color:var(--muted); cursor:pointer; border:1px solid rgba(255,255,255,0.02)}
+    .metric-tab.active{background:linear-gradient(90deg,#072034,#0b2c3f); color:#dff7ff}
+    .charts-area{flex:1; overflow:auto; display:flex; flex-direction:column; gap:10px}
+    .chart-card{background:linear-gradient(180deg,#071827,#021016); border:1px solid rgba(255,255,255,0.03); padding:8px; border-radius:8px}
+    .chart-row{display:flex; gap:10px; align-items:stretch}
+    .chart-canvas{background:transparent; border-radius:6px; flex:1; min-height:380px; max-height:720px}
+    .small{font-size:13px; color:var(--muted)}
+    .legend{display:flex; gap:8px; flex-wrap:wrap}
+    .legend .item{display:flex; gap:8px; align-items:center; color:var(--muted); font-size:13px}
+    .color-swatch{width:12px;height:12px;border-radius:3px}
+    /* grid small-multiples */
+    .small-multiples{display:grid; gap:10px}
+    /* responsiveness */
+    @media (max-width:1000px){ .container{flex-direction:column} .left-panel{width:100%; min-width:auto} .splitter{display:none} .right-panel{width:100%} }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="title">Training Dashboard — Vergleichsmodus (XHTML)</div>
+    <div class="small" style="margin-left:8px">Drag & Drop mehrere Logs, Overlay- und Nebeneinander-Vergleich</div>
+  </div>
+
+  <div class="container" id="mainContainer">
+    <div class="left-panel" id="leftPanel">
+      <div class="controls">
+        <label class="btn" for="fileInput">Dateien öffnen</label>
+        <input id="fileInput" type="file" accept=".txt,.log,.json" multiple style="display:none" />
+        <button class="btn primary" id="parseBtn">Parsen & Anzeigen</button>
+        <button class="btn" id="clearBtn">Alle entfernen</button>
+      </div>
+
+      <div id="dropzone" class="drop">Dateien hierher ziehen (Mehrfachauswahl möglich)</div>
+
+      <div class="file-list" id="fileList"></div>
+
+      <div class="console" id="console">Kopiere oder lade hier deine Log-Dateien hinein. Dann "Parsen & Anzeigen".</div>
+    </div>
+
+    <div class="splitter" id="splitter"><div class="bar"></div></div>
+
+    <div class="right-panel">
+      <div class="toolbar">
+        <div class="mode-select">
+          <label class="small">Darstellungsmodus:</label>
+          <button class="btn" id="modeOverlay">Overlay (kombiniert)</button>
+          <button class="btn" id="modeGrid">Nebeneinander</button>
+        </div>
+
+        <div style="margin-left:12px" class="small">Sichtbare Instanzen:</div>
+        <div id="instanceLegend" class="legend" style="margin-left:6px"></div>
+
+        <div style="margin-left:auto; display:flex; gap:8px;">
+          <button class="btn" id="exportAllPNG">Export All PNG</button>
+          <button class="btn" id="exportAllJSON">Export Data JSON</button>
+        </div>
+      </div>
+
+      <div class="metric-tabs" id="metricTabs"></div>
+
+      <div class="charts-area" id="chartsArea">
+        <!-- dynamisch gefüllte Chart-Karten -->
+      </div>
+    </div>
+  </div>
+
+<script>
+/* ========= Dashboard (Single-file) =========
+ - Resizable left panel with dragging splitter
+ - Drag & Drop + file input supports loading multiple files
+ - Each file parsed for JSON-like metric objects (containing 'epoch'), or JSON array
+ - Supports many instances: overlay combined chart per metric, and grid of small-multiples per metric
+ - Export PNG & JSON per metric (combined and per-instance)
+ - All metrics available and tabs to switch metric views
+=========================================== */
+
+/* Metric info (short) */
+const METRIC_INFO = {
+  epoch: { name:'epoch', desc:'Epoch number (vollständige Durchläufe)', tip:'Aggregationseinheit' },
+  train_loss: { name:'train_loss', desc:'Train Loss', tip:'Soll sinken; hoher Wert => Modell passt schlecht' },
+  eval_loss: { name:'eval_loss', desc:'Eval Loss', tip:'Validierungsverlust; wichtig zum Erkennen von Overfitting' },
+  eval_accuracy: { name:'eval_accuracy', desc:'Accuracy', tip:'Anteil korrekter Vorhersagen' },
+  eval_f1: { name:'eval_f1', desc:'F1', tip:'Harmonisches Mittel von Precision & Recall' },
+  eval_precision: { name:'eval_precision', desc:'Precision', tip:'Hohe Precision => wenige False Positives' },
+  eval_recall: { name:'eval_recall', desc:'Recall', tip:'Hohe Recall => wenige False Negatives' },
+  grad_norm: { name:'grad_norm', desc:'Gradient Norm', tip:'Große Spitzen können problematisch sein; clipping prüfen' },
+  learning_rate: { name:'learning_rate', desc:'Learning Rate', tip:'Scheduler-Verlauf sichtbar' },
+  train_samples_per_second: { name:'train_samples_per_second', desc:'Train Samples/s', tip:'Durchsatz beim Training' },
+  train_steps_per_second: { name:'train_steps_per_second', desc:'Train Steps/s', tip:'Schritte pro Sekunde beim Training' },
+  eval_samples_per_second: { name:'eval_samples_per_second', desc:'Eval Samples/s', tip:'Durchsatz bei der Evaluierung' },
+  eval_steps_per_second: { name:'eval_steps_per_second', desc:'Eval Steps/s', tip:'Eval Steps pro Sekunde' },
+  train_runtime: { name:'train_runtime', desc:'Train Runtime', tip:'Gesamtzeit' }
+};
+
+/* colors for instances */
+const INSTANCE_COLORS = [
+  '#ff6b6b','#10b981','#60a5fa','#f59e0b','#d946ef','#4ade80','#7c3aed','#06b6d4','#f97316','#60a5fa'
+];
+
+let instances = []; // {id, name, color, parsedMetrics: [obj,...], rawText}
+let metricKeys = []; // discovered metrics (union)
+let activeMetric = null;
+let displayMode = 'overlay'; // or 'grid'
+let charts = {}; // Chart.js instances keyed by metric + mode (combined / per-instance grid canvas ids)
+
+const fileInput = document.getElementById('fileInput');
+const dropzone = document.getElementById('dropzone');
+const fileListEl = document.getElementById('fileList');
+const consoleEl = document.getElementById('console');
+const parseBtn = document.getElementById('parseBtn');
+const clearBtn = document.getElementById('clearBtn');
+const metricTabsEl = document.getElementById('metricTabs');
+const chartsArea = document.getElementById('chartsArea');
+const modeOverlayBtn = document.getElementById('modeOverlay');
+const modeGridBtn = document.getElementById('modeGrid');
+const instanceLegend = document.getElementById('instanceLegend');
+const exportAllPNG = document.getElementById('exportAllPNG');
+const exportAllJSON = document.getElementById('exportAllJSON');
+
+/* ---------- splitter for resizing left panel ---------- */
+const splitter = document.getElementById('splitter');
+const leftPanel = document.getElementById('leftPanel');
+let isDragging = false;
+splitter.addEventListener('mousedown', e => { isDragging = true; document.body.style.cursor='col-resize'; });
+document.addEventListener('mouseup', e => { isDragging = false; document.body.style.cursor='default'; });
+document.addEventListener('mousemove', e => {
+  if(!isDragging) return;
+  const containerRect = document.getElementById('mainContainer').getBoundingClientRect();
+  let newWidth = e.clientX - containerRect.left;
+  newWidth = Math.max(160, Math.min(newWidth, containerRect.width*0.8));
+  leftPanel.style.width = newWidth + 'px';
+});
+
+/* ---------- file loading (drag/drop + input) ---------- */
+fileInput.addEventListener('change', e => {
+  const files = Array.from(e.target.files || []);
+  loadFiles(files);
+  fileInput.value = '';
+});
+dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.style.borderColor = '#2ea0ff'; });
+dropzone.addEventListener('dragleave', e => { dropzone.style.borderColor = 'rgba(255,255,255,0.03)'; });
+dropzone.addEventListener('drop', e => {
+  e.preventDefault(); dropzone.style.borderColor = 'rgba(255,255,255,0.03)';
+  const files = Array.from(e.dataTransfer.files || []);
+  loadFiles(files);
+});
+
+function loadFiles(files){
+  for(const f of files){
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const raw = ev.target.result;
+      addInstance(f.name, raw);
+    };
+    reader.readAsText(f, 'utf-8');
+  }
+}
+
+/* ---------- parsing logic (robust) ---------- */
+function parseMetricsFromText(raw){
+  if(!raw || raw.trim().length===0) return [];
+  // 1) try JSON parse (array)
+  try{
+    const j = JSON.parse(raw);
+    if(Array.isArray(j) && j.length && typeof j[0] === 'object') return j;
+  }catch(e){}
+  // 2) find JSON-like objects containing 'epoch'
+  const objRegex = /\{[^}]*"epoch"\s*:\s*[\d.]+[^}]*\}|\{[^}]*'epoch'\s*:\s*[\d.]+[^}]*\}/g;
+  const matches = raw.match(objRegex) || [];
+  const parsed = [];
+  for(const m of matches){
+    let j2 = m.replace(/'/g,'"');
+    j2 = j2.replace(/,(\s*})/g,'$1');
+    try{
+      const obj = JSON.parse(j2);
+      parsed.push(obj);
+    }catch(e){
+      // ignore
+    }
+  }
+  // 3) fallback: scan lines looking for key: value pairs and group by epoch occurrence
+  if(parsed.length===0){
+    const lines = raw.split(/\r?\n/);
+    let current = {};
+    for(const ln of lines){
+      const regex = /['"]?([a-zA-Z0-9_]+)['"]?\s*[:=]\s*([-+]?[0-9]*\.?[0-9]+(?:e[-+]?\d+)?)/g;
+      let m;
+      let changed=false;
+      while((m = regex.exec(ln)) !== null){
+        const k = m[1]; const v = parseFloat(m[2]);
+        current[k]=v; changed=true;
+      }
+      if(changed && current.epoch!==undefined){
+        parsed.push(Object.assign({}, current));
+        current = {};
+      }
+    }
+  }
+  return parsed;
+}
+
+/* ---------- instance management ---------- */
+function addInstance(name, raw){
+  const id = instances.length;
+  const color = INSTANCE_COLORS[id % INSTANCE_COLORS.length];
+  const parsed = parseMetricsFromText(raw);
+  instances.push({ id, name, color, parsedMetrics: parsed, rawText: raw, visible:true });
+  consoleEl.textContent = (consoleEl.textContent ? consoleEl.textContent + "\n\n" : "") + `--- ${name} ---\n` + raw.slice(0,2000);
+  updateUIAfterAdd();
+}
+
+function renderFileList(){
+  fileListEl.innerHTML='';
+  instances.forEach(inst=>{
+    const div = document.createElement('div'); div.className='file-item';
+    div.innerHTML = `<div class="sw" style="background:${inst.color}"></div>
+      <div style="flex:1">${escapeHtml(inst.name)}</div>
+      <div><button class="btn" onclick="toggleVisibleByName('${inst.name.replace(/'/g,"\\'")}')">toggle</button></div>
+      <div><button class="btn" onclick="removeByName('${inst.name.replace(/'/g,"\\'")}')">remove</button></div>`;
+    fileListEl.appendChild(div);
+  });
+}
+
+function renderInstanceLegend(){
+  instanceLegend.innerHTML='';
+  instances.forEach(inst=> {
+    const el = document.createElement('div'); el.className='item';
+    el.innerHTML = `<div class="color-swatch" style="background:${inst.color}"></div><div class="small">${escapeHtml(inst.name)}</div>`;
+    instanceLegend.appendChild(el);
+  });
+}
+function toggleVisibleByName(name){
+  const inst = instances.find(i=>i.name===name); if(inst){ inst.visible = !inst.visible; renderChartsForActiveMetric(); }
+}
+function removeByName(name){ instances = instances.filter(i=>i.name!==name); renderFileList(); renderInstanceLegend(); discoverMetrics(); renderChartsForActiveMetric(); }
+
+function updateUIAfterAdd(){
+  renderFileList();
+  renderInstanceLegend();
+  discoverMetrics();
+  renderChartsForActiveMetric();
+}
+
+/* ---------- metric discovery & tabs ---------- */
+function discoverMetrics(){
+  const set = new Set();
+  instances.forEach(inst=>{
+    inst.parsedMetrics.forEach(obj => {
+      Object.keys(obj).forEach(k => set.add(k));
+    });
+  });
+  metricKeys = Array.from(set).sort((a,b)=>{
+    if(a==='epoch') return -1; if(b==='epoch') return 1; return a.localeCompare(b);
+  });
+  if(metricKeys.length===0) metricKeys = ['eval_loss','eval_accuracy','eval_f1','train_loss','grad_norm','learning_rate','train_samples_per_second','train_steps_per_second','eval_samples_per_second','eval_steps_per_second'];
+  renderMetricTabs();
+}
+
+function renderMetricTabs(){
+  metricTabsEl.innerHTML='';
+  metricKeys.forEach((k,i)=>{
+    const t = document.createElement('div');
+    t.className='metric-tab' + (i===0 ? ' active' : '');
+    t.textContent = k;
+    t.dataset.key = k;
+    t.onclick = ()=> {
+      document.querySelectorAll('.metric-tab').forEach(x=>x.classList.remove('active'));
+      t.classList.add('active');
+      activeMetric = k;
+      renderChartsForActiveMetric();
+    };
+    metricTabsEl.appendChild(t);
+  });
+  activeMetric = metricKeys[0];
+}
+
+/* ---------- chart rendering ---------- */
+function clearChartsArea(){
+  chartsArea.innerHTML='';
+  charts = {};
+}
+function renderChartsForActiveMetric(){
+  if(!activeMetric) return;
+  clearChartsArea();
+  // Top: title and info
+  const infoCard = document.createElement('div'); infoCard.className='chart-card';
+  const infoHtml = `<div style="display:flex;justify-content:space-between;align-items:center">
+    <div>
+      <div style="font-weight:700">${escapeHtml(activeMetric)}</div>
+      <div class="small">${METRIC_INFO[activeMetric]?.desc || 'Zeitreihe'}</div>
+      <div class="small" style="margin-top:6px">${METRIC_INFO[activeMetric]?.tip || ''}</div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn" id="exportMetricPNG">Export PNG</button>
+      <button class="btn" id="exportMetricJSON">Export JSON</button>
+    </div>
+  </div>`;
+  infoCard.innerHTML = infoHtml;
+  chartsArea.appendChild(infoCard);
+
+  // Combined overlay chart
+  const combinedCard = document.createElement('div'); combinedCard.className='chart-card';
+  const combinedRow = document.createElement('div'); combinedRow.className='chart-row';
+  const canvasId = 'combined_' + activeMetric.replace(/[^a-z0-9]/gi,'_');
+  combinedRow.innerHTML = `<canvas id="${canvasId}" class="chart-canvas"></canvas>`;
+  combinedCard.appendChild(combinedRow);
+  chartsArea.appendChild(combinedCard);
+
+  // Grid small-multiples container (per instance)
+  const gridCard = document.createElement('div'); gridCard.className='chart-card';
+  const gridTitle = `<div style="font-weight:700; margin-bottom:8px">Nebeneinander: Instanzen</div>`;
+  const gridContent = document.createElement('div'); gridContent.className='small-multiples';
+  gridCard.innerHTML = gridTitle; gridCard.appendChild(gridContent);
+  chartsArea.appendChild(gridCard);
+
+  // prepare combined dataset
+  const labels = [];
+  const datasets = [];
+  // we will use epoch if available, else step index across entries of each instance
+  const useEpoch = instances.some(inst => inst.parsedMetrics.some(m=> m.epoch !== undefined));
+
+  // build combined x labels (union of epochs found)
+  const epochSet = new Set();
+  if(useEpoch){
+    instances.forEach(inst => inst.parsedMetrics.forEach(m => { if(m.epoch!==undefined) epochSet.add(Number(m.epoch)); }));
+  }
+  const unionEpochs = useEpoch ? Array.from(epochSet).sort((a,b)=>a-b) : null;
+
+  // create dataset per instance
+  instances.forEach((inst, idx) => {
+    const visible = inst.visible !== false;
+    if(useEpoch){
+      const map = new Map(); inst.parsedMetrics.forEach(m => { if(m.epoch!==undefined && m[activeMetric]!==undefined) map.set(Number(m.epoch), m[activeMetric]); });
+      const data = unionEpochs.map(e => map.has(e) ? map.get(e) : null);
+      datasets.push({ label: inst.name, data, borderColor: inst.color, backgroundColor: hexToRgba(inst.color,0.12), spanGaps:true, hidden: !visible });
+    } else {
+      const data = inst.parsedMetrics.map(m => m[activeMetric]!==undefined ? m[activeMetric] : null);
+      const labelsLocal = inst.parsedMetrics.map((m,i)=> i+1);
+      if(labelsLocal.length > labels.length) { labels.length = labelsLocal.length; for(let i=0;i<labelsLocal.length;i++) if(!labels[i]) labels[i] = labelsLocal[i]; }
+      datasets.push({ label: inst.name, data, borderColor: inst.color, backgroundColor: hexToRgba(inst.color,0.12), spanGaps:true, hidden: !visible });
+    }
+  });
+
+  const combinedLabels = useEpoch ? unionEpochs.map(String) : labels.map(l=> String(l || ''));
+  const ctxCombined = document.getElementById(canvasId).getContext('2d');
+  if(charts[canvasId]) { charts[canvasId].destroy(); }
+  charts[canvasId] = new Chart(ctxCombined, {
+    type: 'line',
+    data: { labels: combinedLabels, datasets },
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      plugins: { legend:{display:true, labels:{color:'#dff7ff'}}, title:{display:false} },
+      scales: { x:{ title:{display:true, text: useEpoch ? 'epoch' : 'index'}, ticks:{color:'#bfe9ff'} }, y:{ ticks:{color:'#bfe9ff'} } }
+    }
+  });
+
+  // wire export buttons
+  document.getElementById('exportMetricPNG').onclick = ()=> exportCanvasPNG(canvasId, activeMetric + '_combined.png');
+  document.getElementById('exportMetricJSON').onclick = ()=> exportMetricJSON(activeMetric);
+
+  // create small multiples: each instance its own canvas
+  gridContent.innerHTML = '';
+  const visibleInstances = instances.filter(i=>true);
+  const cols = Math.min(3, visibleInstances.length || 1);
+  gridContent.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+  visibleInstances.forEach((inst, idx)=>{
+    const wrap = document.createElement('div'); wrap.style.background='transparent';
+    const title = document.createElement('div'); title.style.fontWeight='600'; title.style.marginBottom='6px'; title.textContent = inst.name;
+    const c = document.createElement('canvas'); const cid = 'grid_'+activeMetric.replace(/[^a-z0-9]/gi,'_') + '_' + idx; c.id = cid; c.className='chart-canvas';
+    wrap.appendChild(title); wrap.appendChild(c);
+    gridContent.appendChild(wrap);
+
+    let dataVals = [];
+    let labs = [];
+    if(useEpoch){
+      const map = new Map(); inst.parsedMetrics.forEach(m => { if(m.epoch!==undefined && m[activeMetric]!==undefined) map.set(Number(m.epoch), m[activeMetric]); });
+      dataVals = unionEpochs.map(e => map.has(e) ? map.get(e) : null);
+      labs = unionEpochs.map(String);
+    } else {
+      dataVals = inst.parsedMetrics.map(m=> m[activeMetric]!==undefined ? m[activeMetric] : null);
+      labs = dataVals.map((_,i)=> String(i+1));
+    }
+    const ctx = document.getElementById(cid).getContext('2d');
+    if(charts[cid]) charts[cid].destroy();
+    charts[cid] = new Chart(ctx, {
+      type:'line',
+      data: { labels: labs, datasets: [{ label: inst.name, data: dataVals, borderColor: inst.color, backgroundColor: hexToRgba(inst.color,0.12), tension:0.18, spanGaps:true }] },
+      options: { responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{x:{ticks:{color:'#bfe9ff'}}, y:{ticks:{color:'#bfe9ff'}} } }
+    });
+  });
+
+  updateDisplayModeUI();
+}
+
+/* ---------- display mode toggles ---------- */
+modeOverlayBtn.addEventListener('click', ()=> { displayMode='overlay'; updateDisplayModeUI(); });
+modeGridBtn.addEventListener('click', ()=> { displayMode='grid'; updateDisplayModeUI(); });
+
+function updateDisplayModeUI(){
+  const cards = Array.from(chartsArea.querySelectorAll('.chart-card'));
+  if(cards.length < 2) return;
+  if(displayMode === 'overlay'){
+    cards.forEach((c,idx)=> {
+      if(idx===1) c.style.display='block';
+      else if(idx===2) c.style.display='none';
+      else c.style.display = (idx===0? 'block' : 'none');
+    });
+  } else {
+    cards.forEach((c,idx)=> {
+      if(idx===1) c.style.display='none';
+      else if(idx===2) c.style.display='block';
+      else c.style.display = (idx===0? 'block' : 'none');
+    });
+  }
+}
+
+/* ---------- exports ---------- */
+function exportCanvasPNG(canvasId, filename){
+  const canvas = document.getElementById(canvasId);
+  if(!canvas) { alert('Canvas nicht gefunden'); return; }
+  canvas.toBlob(function(blob){
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = filename || 'chart.png'; document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  });
+}
+
+function exportMetricJSON(metric){
+  const payload = instances.map(inst => {
+    const arr = inst.parsedMetrics.map(m => ({ epoch: m.epoch, value: m[metric] }));
+    return { name: inst.name, color: inst.color, series: arr };
+  });
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = metric + '_data.json'; document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+exportAllPNG.addEventListener('click', ()=> {
+  metricKeys.forEach(k => {
+    const canvasId = 'combined_' + k.replace(/[^a-z0-9]/gi,'_');
+    const canvas = document.getElementById(canvasId);
+    if(canvas) exportCanvasPNG(canvasId, k + '_combined.png');
+  });
+});
+exportAllJSON.addEventListener('click', ()=> {
+  const payload = {};
+  metricKeys.forEach(k => {
+    payload[k] = instances.map(inst => ({ name: inst.name, series: inst.parsedMetrics.map(m => ({ epoch:m.epoch, value:m[k] })) }));
+  });
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = 'all_metrics.json'; document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+});
+
+/* ---------- parse & UI glue ---------- */
+parseBtn.addEventListener('click', ()=> {
+  discoverMetrics();
+  renderChartsForActiveMetric();
+});
+
+clearBtn.addEventListener('click', ()=> {
+  instances = []; metricKeys=[]; activeMetric=null; charts={};
+  fileListEl.innerHTML=''; consoleEl.textContent=''; metricTabsEl.innerHTML=''; chartsArea.innerHTML=''; instanceLegend.innerHTML='';
+});
+
+/* ---------- initial helpers & small utils ---------- */
+function escapeHtml(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function hexToRgba(hex, alpha){ const c = hex.replace('#',''); const r = parseInt(c.substring(0,2),16), g = parseInt(c.substring(2,4),16), b = parseInt(c.substring(4,6),16); return `rgba(${r},${g},${b},${alpha})`; }
+
+/* ---------- when instances are added via addInstance earlier, call updateUIAfterAdd ---------- */
+/* expose toggle/remove for inline onclick strings */
+window.toggleInstanceVisible = function(){};
+window.removeInstance = function(){};
+window.toggleVisibleByName = toggleVisibleByName;
+window.removeByName = removeByName;
+
+/* Provide a small demo when page loaded */
+(function initDemo(){
+  const sample = `{'loss': 1.3446, 'grad_norm': 8.8371, 'learning_rate': 6.233e-06, 'epoch': 1.0}
+{'eval_loss': 0.7781474, 'eval_accuracy': 0.6616085, 'eval_f1': 0.6036111, 'eval_precision': 0.5747313, 'eval_recall': 0.6616085, 'epoch': 1.0}
+{'loss': 0.5872, 'grad_norm': 32.882, 'learning_rate': 1.248e-05, 'epoch': 2.0}
+{'eval_loss': 0.4699881, 'eval_accuracy': 0.80728376, 'eval_f1': 0.8090865, 'epoch': 2.0}
+{'loss': 0.3666, 'grad_norm': 4.485, 'learning_rate': 1.873e-05, 'epoch': 3.0}
+{'eval_loss': 0.35511619, 'eval_accuracy': 0.85735964, 'eval_f1': 0.85852878, 'epoch': 3.0}
+{'train_runtime': 3883.2405, 'train_samples_per_second': 244.332, 'train_steps_per_second': 7.643, 'train_loss': 0.047262776140070066, 'epoch': 80.0}
+`;
+  addInstance('sample_run_A.txt', sample);
+  addInstance('sample_run_B.txt', sample.replace(/0.7781474/g,'0.69').replace(/0.6616085/g,'0.71').replace(/0.35511619/g,'0.30').replace(/0.85735964/g,'0.88'));
+})();
+
+</script>
+</body>
+</html>

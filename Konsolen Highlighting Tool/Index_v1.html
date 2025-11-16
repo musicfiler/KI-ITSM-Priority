@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Training Console + Metriken Dashboard</title>
+
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+  <style>
+    :root{
+      --bg:#0f1720; --panel:#0b1220; --accent:#16a34a; --accent-2:#06b6d4; --muted:#9aa5b1; --progress-bg:#1f2937;
+      --bar-good:#16a34a; --bar-mid:#f59e0b; --bar-bad:#ef4444;
+    }
+    body{
+      margin:0; font-family:Inter, Roboto, Arial, sans-serif; background:linear-gradient(180deg,#071025 0%, #061827 100%); color:#e6eef6;
+      padding:18px;
+    }
+    .container{display:grid; grid-template-columns: 1fr 520px; gap:18px; align-items:start;}
+    .console-panel, .charts-panel{background:var(--panel); border-radius:10px; padding:14px; box-shadow: 0 6px 18px rgba(2,6,23,0.6);}
+    .console-area{height:780px; overflow:auto; background:#020617; border-radius:8px; padding:12px; font-family: monospace; font-size:12px; color:#d7e6f7; white-space:pre-wrap;}
+    .controls{display:flex; gap:8px; margin-bottom:8px; align-items:center;}
+    .btn{background:#0b1220;border:1px solid #16212b;padding:6px 10px;color:var(--muted);border-radius:6px;cursor:pointer}
+    .btn.primary{background:linear-gradient(90deg,var(--accent),#10b981); color:#041018; border:none; font-weight:600}
+    .tabs{display:flex; gap:6px; margin-bottom:10px;}
+    .tab{padding:8px 12px;border-radius:8px;background:#08121a;color:var(--muted);cursor:pointer}
+    .tab.active{background:#071827;color:#dff7e7;border:1px solid rgba(255,255,255,0.04)}
+    .chart-wrap{height:380px;padding:6px;background:linear-gradient(180deg,#07182700,#07182700); border-radius:8px}
+    .chart-canvas{width:100%;height:100%}
+    /* colored progress inside console parsing */
+    .progress-line{display:flex; gap:10px; align-items:center;}
+    .progress-bar{
+      height:10px; width:420px; background:var(--progress-bg); border-radius:6px; overflow:hidden; box-shadow:inset 0 -2px 6px rgba(0,0,0,0.5);
+    }
+    .progress-bar > span{display:block; height:100%;}
+    .percent{min-width:36px; text-align:right; color:var(--muted); font-variant-numeric:tabular-nums; font-size:12px}
+    .epoch-meta{color:var(--muted); font-size:12px; margin-left:auto}
+    .metric-chip{display:inline-block;padding:4px 8px;border-radius:12px;background:rgba(255,255,255,0.03);color:var(--muted);font-size:12px;margin-right:6px}
+    .legend-row{display:flex; gap:8px;align-items:center; margin-bottom:6px; flex-wrap:wrap}
+    /* responsive */
+    @media (max-width:1100px){ .container{grid-template-columns:1fr} .console-area{height:420px} .chart-wrap{height:320px} }
+  </style>
+</head>
+<body>
+  <h3>Training Console mit Metrik-Dashboard</h3>
+
+  <div class="container">
+    <!-- Console + controls -->
+    <div class="console-panel">
+      <div class="controls">
+        <button class="btn" id="loadSample">Sample-Log laden</button>
+        <button class="btn primary" id="parseBtn">Konsole parsen & Charts aktualisieren</button>
+        <div style="margin-left:auto;color:var(--muted);font-size:13px">Drag & Drop Log in das Konsolenfeld möglich</div>
+      </div>
+
+      <div id="console" class="console-area" contenteditable="false" spellcheck="false">
+        <!-- Hier den Konsolen-Text einfügen / wird farbig hervorgehoben -->
+        Paste or drop your training console text here, then click "Konsole parsen & Charts aktualisieren".
+      </div>
+      <div style="margin-top:10px;color:var(--muted);font-size:12px">
+        Hinweise: Der Parser sucht JSON-ähnliche Metrik-Objekte mit Schlüsseln wie <code>eval_loss</code> und dem Feld <code>epoch</code>.
+      </div>
+    </div>
+
+    <!-- Charts -->
+    <div class="charts-panel">
+      <div class="legend-row" id="metricLegend"></div>
+
+      <div class="tabs" id="tabs">
+        <div class="tab active" data-chart="combined">Kombiniert</div>
+        <div class="tab" data-chart="eval_loss">eval_loss</div>
+        <div class="tab" data-chart="eval_accuracy">eval_accuracy</div>
+        <div class="tab" data-chart="eval_f1">eval_f1</div>
+        <div class="tab" data-chart="eval_precision">eval_precision</div>
+        <div class="tab" data-chart="eval_recall">eval_recall</div>
+        <div class="tab" data-chart="eval_samples_per_second">samples/s</div>
+        <div class="tab" data-chart="train_loss">train_loss</div>
+      </div>
+
+      <div id="chartsArea">
+        <div class="chart-wrap" id="chart-combined"><canvas id="chartCombined" class="chart-canvas"></canvas></div>
+        <div class="chart-wrap" id="chart-eval_loss" style="display:none"><canvas id="chartEvalLoss" class="chart-canvas"></canvas></div>
+        <div class="chart-wrap" id="chart-eval_accuracy" style="display:none"><canvas id="chartEvalAcc" class="chart-canvas"></canvas></div>
+        <div class="chart-wrap" id="chart-eval_f1" style="display:none"><canvas id="chartEvalF1" class="chart-canvas"></canvas></div>
+        <div class="chart-wrap" id="chart-eval_precision" style="display:none"><canvas id="chartEvalPrec" class="chart-canvas"></canvas></div>
+        <div class="chart-wrap" id="chart-eval_recall" style="display:none"><canvas id="chartEvalRec" class="chart-canvas"></canvas></div>
+        <div class="chart-wrap" id="chart-samplesps" style="display:none"><canvas id="chartSamples" class="chart-canvas"></canvas></div>
+        <div class="chart-wrap" id="chart-train_loss" style="display:none"><canvas id="chartTrainLoss" class="chart-canvas"></canvas></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* ----------------------
+  Utilities & parsing
+   - scan for JSON-like metric objects: {... 'eval_loss': X, ... 'epoch': Y}
+   - also extract "train_loss" and final train stats block if present
+   - render console with color-progress bars and metric chips
+-----------------------*/
+
+const consoleEl = document.getElementById('console');
+const parseBtn = document.getElementById('parseBtn');
+const loadSample = document.getElementById('loadSample');
+
+let parsedMetrics = []; // array of metric objects keyed by epoch
+
+// helper: color for progress percent
+function progressColor(p){
+  if(p >= 90) return getComputedStyle(document.documentElement).getPropertyValue('--bar-good') || '#16a34a';
+  if(p >= 60) return getComputedStyle(document.documentElement).getPropertyValue('--bar-mid') || '#f59e0b';
+  return getComputedStyle(document.documentElement).getPropertyValue('--bar-bad') || '#ef4444';
+}
+
+// parse metrics from raw log text
+function parseMetricsFromText(text){
+  const metrics = [];
+  const trainLossList = []; // {epoch, train_loss}
+  // Find JSON-like objects: we look for occurrences of { ... 'eval_loss': ... , ... 'epoch': num}
+  const objRegex = /{[^}]*'epoch'\s*:\s*[\d.]+[^}]*}/g; // matches blocks that include 'epoch'
+  const matches = text.match(objRegex) || [];
+
+  for(const m of matches){
+    // normalize quotes to double quotes and single quotes around keys/values
+    let j = m.replace(/([a-zA-Z0-9_]+)\s*:/g, '"$1":');       // keys to "key":
+    j = j.replace(/'([^']*)'/g, '"$1"');                    // 'val' -> "val"
+    // remove trailing commas before }
+    j = j.replace(/,(\s*})/g,'$1');
+    try {
+      const o = JSON.parse(j);
+      // accept if it has eval_loss or eval_accuracy or epoch
+      if(o.epoch !== undefined){
+        metrics.push(o);
+      }
+    } catch(e){
+      // ignore parse errors
+    }
+  }
+
+  // also attempt to capture train_loss final block like {'train_loss': 0.047..., 'epoch': 80.0}
+  const trainRegex = /'train_loss'\s*:\s*([0-9]*\.?[0-9]+)/g;
+  let tmatch;
+  while((tmatch = trainRegex.exec(text)) !== null){
+    trainLossList.push(parseFloat(tmatch[1]));
+  }
+
+  // sort metrics by epoch
+  metrics.sort((a,b)=> (a.epoch||0) - (b.epoch||0));
+  return {metrics, trainLossList};
+}
+
+// render console text with colored progress bars and metric chips
+function renderConsoleWithHighlights(raw){
+  // We'll break into lines and detect lines containing percent progress patterns like "81%|████"
+  const lines = raw.split(/\r?\n/);
+  const out = [];
+  const percentLineRegex = /(\d{1,3})%[^\n]*/; // crude
+  const epochObjRegex = /{[^}]*'epoch'\s*:\s*[\d.]+[^}]*}/g;
+
+  for(let i=0;i<lines.length;i++){
+    const line = lines[i];
+    // show epoch metric objects as special chips
+    const objMatches = line.match(epochObjRegex);
+    if(objMatches){
+      // show each JSON-object found as a compact chip
+      objMatches.forEach(objText=>{
+        const pretty = objText.replace(/'([^']+)'/g,'$1').slice(0,200);
+        out.push(`<div style="margin:6px 0"><span class="metric-chip">${escapeHtml(pretty)}</span></div>`);
+      });
+      // continue to next textual content
+      continue;
+    }
+
+    const pMatch = line.match(/(\d{1,3})%.*?(\[.*?\])/);
+    // fallback for many lines containing "xx%|..." (tqdm style)
+    const pMatch2 = line.match(/(\d{1,3})%/);
+
+    if(pMatch || pMatch2){
+      const perc = pMatch ? Number(pMatch[1]) : Number(pMatch2[1]);
+      const color = progressColor(perc);
+      // add a bar representation and the original line truncated
+      const barInner = `<span style="width:${Math.max(0,Math.min(100,perc))}%;background:${color};display:block"></span>`;
+      out.push(`<div class="progress-line"><div class="percent">${perc}%</div><div class="progress-bar" title="${escapeHtml(line)}">${barInner}</div><div class="epoch-meta">${escapeHtml(line.slice(0,140))}</div></div>`);
+    } else {
+      // normal text line with slight colorization of keywords
+      let l = escapeHtml(line)
+        .replace(/(WARNING|WARNUNG|ERROR|UndefinedMetricWarning)/g,'<strong style="color:#ffb86b">$1</strong>')
+        .replace(/(GPU gefunden|Training erfolgreich abgeschlossen|Speichere das finale \*beste\* Modell)/g,'<strong style="color:#9df5c1">$1</strong>')
+        .replace(/(eval_loss|eval_accuracy|eval_f1|eval_precision|eval_recall|epoch|train_loss)/g,'<span style="color:#9cd6ff">$1</span>');
+      out.push(`<div style="white-space:pre-wrap;">${l}</div>`);
+    }
+  }
+
+  consoleEl.innerHTML = out.join('\n');
+}
+
+// escape helper
+function escapeHtml(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+/* ----------------------
+  Charting (Chart.js)
+-----------------------*/
+let charts = {};
+function ensureCharts(){
+  // common configuration
+  const labels = parsedMetrics.map(m => 'e'+(m.epoch||''));
+  const epochs = parsedMetrics.map(m => m.epoch || null);
+
+  // color palette
+  const cols = {
+    loss:'#ff6b6b', acc:'#16a34a', f1:'#06b6d4', prec:'#f59e0b', rec:'#7c3aed', samples:'#60a5fa', train_loss:'#f97316'
+  };
+
+  // destroy previous charts
+  for(const k in charts){ try{ charts[k].destroy(); }catch{} }
+  charts = {};
+
+  // Eval_loss chart
+  const ctxLoss = document.getElementById('chartEvalLoss').getContext('2d');
+  charts.eval_loss = new Chart(ctxLoss, {
+    type:'line',
+    data:{
+      labels: epochs,
+      datasets:[{
+        label:'eval_loss',
+        data: parsedMetrics.map(m=> typeof m.eval_loss==='number' ? m.eval_loss : null),
+        borderColor: cols.loss, backgroundColor: hexToRgba(cols.loss,0.14), tension:0.18, pointRadius:3, spanGaps:true
+      }]
+    },
+    options:commonOptions('eval_loss')
+  });
+
+  // eval_accuracy
+  const ctxAcc = document.getElementById('chartEvalAcc').getContext('2d');
+  charts.eval_accuracy = new Chart(ctxAcc, {
+    type:'line',
+    data:{ labels:epochs, datasets:[{label:'eval_accuracy', data:parsedMetrics.map(m=> m.eval_accuracy || null), borderColor:cols.acc, backgroundColor:hexToRgba(cols.acc,0.12), tension:0.18, pointRadius:3 }] },
+    options:commonOptions('eval_accuracy', {suggestedMax:1, suggestedMin:0})
+  });
+
+  // eval_f1
+  const ctxF1 = document.getElementById('chartEvalF1').getContext('2d');
+  charts.eval_f1 = new Chart(ctxF1, {
+    type:'line',
+    data:{ labels:epochs, datasets:[{label:'eval_f1', data:parsedMetrics.map(m=> m.eval_f1 || null), borderColor:cols.f1, backgroundColor:hexToRgba(cols.f1,0.12), tension:0.18, pointRadius:3 }] },
+    options:commonOptions('eval_f1')
+  });
+
+  // precision
+  const ctxPrec = document.getElementById('chartEvalPrec').getContext('2d');
+  charts.eval_precision = new Chart(ctxPrec, {
+    type:'line',
+    data:{ labels:epochs, datasets:[{label:'eval_precision', data:parsedMetrics.map(m=> m.eval_precision || null), borderColor:cols.prec, backgroundColor:hexToRgba(cols.prec,0.12), tension:0.18, pointRadius:3 }] },
+    options:commonOptions('eval_precision')
+  });
+
+  // recall
+  const ctxRec = document.getElementById('chartEvalRec').getContext('2d');
+  charts.eval_recall = new Chart(ctxRec, {
+    type:'line',
+    data:{ labels:epochs, datasets:[{label:'eval_recall', data:parsedMetrics.map(m=> m.eval_recall || null), borderColor:cols.rec, backgroundColor:hexToRgba(cols.rec,0.12), tension:0.18, pointRadius:3 }] },
+    options:commonOptions('eval_recall')
+  });
+
+  // samples per second
+  const ctxSamples = document.getElementById('chartSamples').getContext('2d');
+  charts.samples = new Chart(ctxSamples, {
+    type:'line',
+    data:{ labels:epochs, datasets:[{label:'eval_samples_per_second', data:parsedMetrics.map(m=> m.eval_samples_per_second || null), borderColor:cols.samples, backgroundColor:hexToRgba(cols.samples,0.12), tension:0.18, pointRadius:3 }] },
+    options:commonOptions('samples')
+  });
+
+  // train_loss (if available)
+  const ctxTrainLoss = document.getElementById('chartTrainLoss').getContext('2d');
+  charts.train_loss = new Chart(ctxTrainLoss, {
+    type:'line',
+    data:{
+      labels: parsedMetrics.map(m=> m.epoch || null),
+      datasets:[
+        {label:'train_loss (per epoch if reported)', data: parsedMetrics.map(m=> m.train_loss || null), borderColor: cols.train_loss, backgroundColor:hexToRgba(cols.train_loss,0.12), tension:0.18, pointRadius:3}
+      ]
+    },
+    options: commonOptions('train_loss')
+  });
+
+  // Combined chart: show loss + accuracy + f1 with secondary axis
+  const ctxCombined = document.getElementById('chartCombined').getContext('2d');
+  charts.combined = new Chart(ctxCombined, {
+    type:'line',
+    data:{
+      labels: epochs,
+      datasets:[
+        {label:'eval_loss', data: parsedMetrics.map(m=> m.eval_loss || null), borderColor:cols.loss, backgroundColor:hexToRgba(cols.loss,0.07), yAxisID:'y'},
+        {label:'eval_accuracy', data: parsedMetrics.map(m=> m.eval_accuracy || null), borderColor:cols.acc, backgroundColor:hexToRgba(cols.acc,0.07), yAxisID:'y2'},
+        {label:'eval_f1', data: parsedMetrics.map(m=> m.eval_f1 || null), borderColor:cols.f1, backgroundColor:hexToRgba(cols.f1,0.07), yAxisID:'y2'}
+      ]
+    },
+    options: {
+      ...commonOptions('combined'),
+      scales:{
+        x:{ title:{display:true,text:'epoch'} },
+        y: { type:'linear', position:'left', title:{display:true,text:'Loss (left axis)'} },
+        y2:{ type:'linear', position:'right', title:{display:true,text:'Scores (right axis)'}, grid:{display:false}, suggestedMin:0, suggestedMax:1 }
+      },
+      plugins:{
+        tooltip:{mode:'index', intersect:false}
+      }
+    }
+  });
+
+  // update metric legend
+  updateLegend(Object.keys(cols));
+}
+
+function commonOptions(title, extra={}){
+  return {
+    responsive:true,
+    maintainAspectRatio:false,
+    plugins:{
+      legend:{display:true, labels:{color:'#dff7e7'}},
+      title:{display:false, text:title}
+    },
+    scales:{
+      x:{ ticks:{color:'#cfe7ff'}, grid:{color:'rgba(255,255,255,0.03)'}},
+      y:{ ticks:{color:'#cfe7ff'}, grid:{color:'rgba(255,255,255,0.03)'} }
+    },
+    interaction:{mode:'index', intersect:false},
+    elements:{point:{radius:3}}
+  };
+}
+
+function hexToRgba(hex, alpha=0.12){
+  const c = hex.replace('#','');
+  const r = parseInt(c.substring(0,2),16), g = parseInt(c.substring(2,4),16), b = parseInt(c.substring(4,6),16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function updateLegend(keys){
+  const container = document.getElementById('metricLegend');
+  container.innerHTML = '';
+  const displayList = [
+    {k:'eval_loss', color:'#ff6b6b'},
+    {k:'eval_accuracy', color:'#16a34a'},
+    {k:'eval_f1', color:'#06b6d4'},
+    {k:'eval_precision', color:'#f59e0b'},
+    {k:'eval_recall', color:'#7c3aed'},
+    {k:'eval_samples_per_second', color:'#60a5fa'},
+    {k:'train_loss', color:'#f97316'}
+  ];
+  displayList.forEach(it=>{
+    const el = document.createElement('div');
+    el.innerHTML = `<div style="display:flex;gap:6px;align-items:center">
+      <div style="width:12px;height:12px;border-radius:3px;background:${it.color}"></div>
+      <div style="color:var(--muted);font-size:13px">${it.k}</div>
+    </div>`;
+    container.appendChild(el);
+  });
+}
+
+/* ----------------------
+  Tab switching
+-----------------------*/
+document.getElementById('tabs').addEventListener('click', e=>{
+  const t = e.target.closest('.tab');
+  if(!t) return;
+  document.querySelectorAll('.tab').forEach(tb=>tb.classList.remove('active'));
+  t.classList.add('active');
+  const chart = t.dataset.chart;
+  document.querySelectorAll('#chartsArea > .chart-wrap').forEach(el=>el.style.display='none');
+  const id = {
+    'combined':'chart-combined',
+    'eval_loss':'chart-eval_loss',
+    'eval_accuracy':'chart-eval_accuracy',
+    'eval_f1':'chart-eval_f1',
+    'eval_precision':'chart-eval_precision',
+    'eval_recall':'chart-eval_recall',
+    'eval_samples_per_second':'chart-samplesps',
+    'train_loss':'chart-train_loss'
+  }[chart] || 'chart-combined';
+  document.getElementById(id).style.display='block';
+});
+
+/* ----------------------
+  Main parse + render flow
+-----------------------*/
+parseBtn.addEventListener('click', ()=>{
+  const raw = consoleEl.textContent || consoleEl.innerText || '';
+  const {metrics, trainLossList} = parseMetricsFromText(raw);
+  // attach train_loss per epoch if trainLossList length matches
+  // often train_loss appears only as final; we attach if possible
+  parsedMetrics = metrics.map(m => {
+    return {...m};
+  });
+  if(parsedMetrics.length === 0){
+    alert('Keine epoch-Metriken gefunden. Bitte Log einfügen und erneut versuchen.');
+    return;
+  }
+  // attach train_loss if there are as many entries as epochs
+  if(trainLossList.length > 0){
+    // naive attach from end if lengths differ
+    for(let i=0;i<parsedMetrics.length;i++){
+      parsedMetrics[i].train_loss = trainLossList[i] ?? null;
+    }
+  }
+
+  // Render highlighted console
+  renderConsoleWithHighlights(raw);
+
+  // build charts
+  ensureCharts();
+
+  // show combined by default
+  document.querySelectorAll('.tab').forEach(tb=>tb.classList.remove('active'));
+  document.querySelector('.tab[data-chart="combined"]').classList.add('active');
+  document.getElementById('chart-combined').style.display='block';
+  // hide others
+  ['chart-eval_loss','chart-eval_accuracy','chart-eval_f1','chart-eval_precision','chart-eval_recall','chart-samplesps','chart-train_loss'].forEach(id=>document.getElementById(id).style.display='none');
+});
+
+/* ----------------------
+  Drag & Drop + sample loader
+-----------------------*/
+consoleEl.addEventListener('dragover', e=>{ e.preventDefault(); e.dataTransfer.dropEffect='copy'; });
+consoleEl.addEventListener('drop', e=>{
+  e.preventDefault();
+  const f = e.dataTransfer.files && e.dataTransfer.files[0];
+  if(f){
+    const reader = new FileReader();
+    reader.onload = (ev)=>{ consoleEl.textContent = ev.target.result; };
+    reader.readAsText(f);
+  } else {
+    const txt = e.dataTransfer.getData('text/plain');
+    if(txt) consoleEl.textContent = txt;
+  }
+});
+
+loadSample.addEventListener('click', ()=>{
+  // minimal sample for demo (you can replace with a real log snippet)
+  const sample = `
+  81%|████████████| 17/21 [00:01<00:00, 13.23it/s]
+  {'eval_loss': 0.7781473994255066, 'eval_accuracy': 0.661608497723824, 'eval_f1': 0.6036111075115989, 'eval_precision': 0.5747313219002144, 'eval_recall': 0.661608497723824, 'eval_runtime': 1.6039, 'eval_samples_per_second': 821.769, 'eval_steps_per_second': 13.093, 'epoch': 1.0}
+  100%|████████████| 21/21 [00:01<00:00, 13.20it/s]
+  {'eval_loss': 0.4699881076812744, 'eval_accuracy': 0.8072837632776935, 'eval_f1': 0.8090864861095319, 'eval_precision': 0.8229205367280532, 'eval_recall': 0.8072837632776935, 'eval_runtime': 1.5852, 'eval_samples_per_second': 831.438, 'eval_steps_per_second': 13.247, 'epoch': 2.0}
+  ... (kopiere kompletten Log hier) ...
+  {'train_runtime': 3883.2405, 'train_samples_per_second': 244.332, 'train_steps_per_second': 7.643, 'train_loss': 0.047262776140070066, 'epoch': 80.0}
+  `;
+  consoleEl.textContent = sample;
+});
+
+/* ----------------------
+  Init: small placeholder
+-----------------------*/
+renderConsoleWithHighlights(consoleEl.textContent);
+</script>
+</body>
+</html>

@@ -1,0 +1,51 @@
+############################################ index v6 (Kombination von v5 + v4-Anforderungen)
+
+Implementiert Summary-Benchmark-Charts:
+
+Erstellt einen neuen virtuellen Tab "summary_benchmark".
+
+Filtert Metriken (train_loss, train_runtime, train_samples_per_second, train_steps_per_second) aus der Hauptansicht.
+
+Stellt diese Metriken stattdessen als Balkendiagramm im Benchmark-Tab dar. Verwendet den letzten gefundenen Wert aus dem Log der jeweiligen Instanz.
+
+Implementiert anpassbare Graphgrößen:
+
+Fügt der Toolbar (oben rechts) Eingabefelder hinzu, um die minimale und maximale Höhe der Chart-Canvas dynamisch per CSS zu überschreiben.
+
+Beinhaltet alle Funktionen aus v5 (Per-Klassen-Gruppierung).
+
+############################################ index v5 (Per-Klassen-Metriken)
+
+Implementiert Per-Klassen-Gruppierung:
+
+Automatische Erkennung von Metriken wie eval_f1_critical, eval_recall_high etc.
+
+Erstellt "virtuelle" Tabs: per_class_f1, per_class_recall, per_class_precision.
+
+Entfernt die einzelnen Klassen-Metriken aus der Tab-Leiste, um die Übersichtlichkeit zu wahren.
+
+Overlay-Modus (Kombiniert): Zeigt Graphen für alle Klassen aller Instanzen (z. B. "Run A - F1 Critical", "Run B - F1 Critical").
+
+Grid-Modus (Nebeneinander): Zeigt pro Instanz ein Diagramm, das den internen Vergleich aller Klassen dieser Instanz darstellt (z. B. Chart "Run A" zeigt 5 Linien: F1-Crit, F1-High...).
+
+############################################ index v4 (Multi-File-Vergleich)
+
+Kombinierte Ansicht Instanzierbar, Overlay, Nebeneinander exportierbar.
+
+(Anm.: Fenster links mit Konsolen-Beispielen nicht korrekt formatiert wie in Version 3.)
+
+(Neue Anforderung, jetzt in v6 umgesetzt): train_loss, train_runtime, train_samples_per_second und train_steps_per_second sind Gesamtmetriken. Sie sollen als Balkendiagramm in einem kombinierten Graphen (Gesamtmetrik Benchmark) dargestellt werden.
+
+(Neue Anforderung, jetzt in v6 umgesetzt): Möglichkeit ergänzt, die Größe (Höhe/Breite) aller Graphen anzupassen.
+
+############################################ index v3 (Automatisches Dashboard)
+
+Implementiert: automatische Metrikerkennung, Chart-Factory für alle gefundenen Keys, individuelle Info-Popover mit Erklärung und Handlungstipps, Drag & Drop / Datei-Upload, Tab-Übersicht mit per-Chart-Beschreibungen, Export (PNG / JSON) und eine Farbgebung.
+
+Hinweis: Alles läuft lokal im Browser (kein Backend). Nutzt Chart.js.
+
+############################################ index v2 (Statische Tabs & Plotly)
+
+Fertige HTML-Datei mit statischen Tabs für (Loss & Eval, Grad Norm, Learning Rate, Accuracy/F1, Legende).
+
+Nutzt Plotly.js für die Darstellung und den Export.

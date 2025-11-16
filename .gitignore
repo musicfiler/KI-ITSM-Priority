@@ -1,7 +1,9 @@
-/ergebnisse
+/ergebnisse*
 /trainingsdaten
 /distilbert-local
 /log
 /.venv
+/.venv2
+/.zencoder
 JupyterProject.iml
 misc.xml

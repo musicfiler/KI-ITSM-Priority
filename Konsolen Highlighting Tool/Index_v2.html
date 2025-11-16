@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <title>Training Logs Visualizer</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; margin: 12px; color: #111; }
+    .container { display: grid; grid-template-columns: 1fr 520px; gap: 14px; align-items: start; }
+    .left { min-width: 0; } /* charts area */
+    .right { background:#fafafa; border:1px solid #e3e3e3; padding:10px; height: calc(100vh - 60px); overflow:auto; }
+    .tabs { display:flex; gap:8px; margin-bottom:8px; flex-wrap:wrap; }
+    .tab-btn { padding:8px 12px; background:#fff; border:1px solid #d0d0d0; cursor:pointer; border-radius:6px; }
+    .tab-btn.active { background:#0b6cff; color:#fff; border-color:#0b6cff; }
+    .tab-content { display:none; }
+    .tab-content.active { display:block; }
+    .chart-card { background:#fff; border:1px solid #e6e6e6; padding:10px; border-radius:8px; margin-bottom:12px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+    .chart-title { font-weight:700; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center; }
+    .chart-area { width:100%; height:420px; } /* default (larger than right pane) */
+    .controls { display:flex; gap:8px; align-items:center; }
+    .legend { background:#fff; border:1px solid #e6e6e6; padding:10px; border-radius:8px; margin-bottom:12px; }
+    .metric-name { font-weight:700; }
+    @media (max-width:1100px) {
+      .container { grid-template-columns: 1fr; }
+      .right { height:auto; order:2; }
+      .chart-area { height:360px; }
+    }
+  </style>
+</head>
+<body>
+
+  <h2>Training Logs Visualizer</h2>
+  <div class="container">
+    <div class="left">
+      <div class="tabs" id="tabs"></div>
+
+      <!-- Tab: Loss & others (combined) -->
+      <div id="tab-loss" class="tab-content">
+        <div class="chart-card">
+          <div class="chart-title">
+            <div>Loss (Train) & Eval Metriken</div>
+            <div class="controls">
+              <button onclick="exportChart('lossChart')">Export PNG</button>
+              <button onclick="exportData('lossChart')">Export JSON</button>
+            </div>
+          </div>
+          <div id="lossChart" class="chart-area"></div>
+        </div>
+      </div>
+
+      <!-- Tab: Grad Norm -->
+      <div id="tab-grad" class="tab-content">
+        <div class="chart-card">
+          <div class="chart-title">
+            <div>Gradient Norm (grad_norm)</div>
+            <div class="controls">
+              <button onclick="exportChart('gradChart')">Export PNG</button>
+              <button onclick="exportData('gradChart')">Export JSON</button>
+            </div>
+          </div>
+          <div id="gradChart" class="chart-area"></div>
+          <div style="margin-top:6px; color:#444">Was zu sehen ist: Schwankungen in der Gradientennorm pro Schritt/Epoch; Spitzen deuten auf gelegentliches Gradient Exploding / hohe Updates hin</div>
+        </div>
+      </div>
+
+      <!-- Tab: Learning Rate -->
+      <div id="tab-lr" class="tab-content">
+        <div class="chart-card">
+          <div class="chart-title">
+            <div>Learning Rate (learning_rate)</div>
+            <div class="controls">
+              <button onclick="exportChart('lrChart')">Export PNG</button>
+              <button onclick="exportData('lrChart')">Export JSON</button>
+            </div>
+          </div>
+          <div id="lrChart" class="chart-area"></div>
+          <div style="margin-top:6px; color:#444">Was zu sehen ist: Verlauf der Lernrate über Schritte/Epochen; bei Schedulers sieht man decay/annealing/warms</div>
+        </div>
+      </div>
+
+      <!-- Tab: Accuracy/F1/Precision/Recall -->
+      <div id="tab-metrics" class="tab-content">
+        <div class="chart-card">
+          <div class="chart-title">
+            <div>Accuracy / F1 / Precision / Recall (Eval)</div>
+            <div class="controls">
+              <button onclick="exportChart('metricsChart')">Export PNG</button>
+              <button onclick="exportData('metricsChart')">Export JSON</button>
+            </div>
+          </div>
+          <div id="metricsChart" class="chart-area"></div>
+          <div style="margin-top:6px; color:#444">Was zu sehen ist: Performance-Metriken auf Validierungsset über Epochen; vergleiche F1 vs Precision/Recall um Ausgewogenheit zu prüfen</div>
+        </div>
+      </div>
+
+      <!-- Tab: Legend / Erklärung -->
+      <div id="tab-legend" class="tab-content">
+        <div class="legend">
+          <div><span class="metric-name">Legende und Erläuterungen</span></div>
+          <ul>
+            <li><strong>loss</strong>: Trainingsverlust (kleiner = besser). Zeigt Modell-Fehler während des Trainings</li>
+            <li><strong>eval_loss</strong>: Validierungsverlust bei Evaluierung (Epoch-Level)</li>
+            <li><strong>accuracy</strong>: Anteil korrekter Vorhersagen (Eval)</li>
+            <li><strong>f1</strong>: F1-Score (harmonisches Mittel von Precision und Recall)</li>
+            <li><strong>precision</strong>: Anteil der als positiv vorhergesagten Beispiele, die wirklich positiv sind</li>
+            <li><strong>recall</strong>: Anteil der echten positiven Beispiele, die erkannt wurden</li>
+            <li><strong>grad_norm</strong>: Norm der Gradienten; sehr hohe Spitzen können problematisch sein</li>
+            <li><strong>learning_rate</strong>: Lernraten-Scheduler-Wert; beeinflusst Schrittgröße beim Optimizer</li>
+            <li><strong>epoch</strong>: Vollständige Durchläufe über den Trainingsdatensatz</li>
+          </ul>
+        </div>
+
+        <div class="legend">
+          <div><strong>Kurze Hinweise zur Interpretation</strong></div>
+          <ul>
+            <li>Sinkender Trainings- und Eval-Loss kombiniert mit steigender Accuracy/F1 deutet auf gutes Lernen hin</li>
+            <li>Große Diskrepanzen zwischen Precision und Recall deuten auf Class-Imbalance oder Threshold-Probleme hin</li>
+            <li>Starke Schwankungen in grad_norm können Instabilität anzeigen; ggf. clipping oder Anpassung der LR prüfen</li>
+            <li>Learning rate decay zeigt sich als fallende Kurve; plötzliche Sprünge weisen auf Scheduler-Events</li>
+          </ul>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- rechts: Raw Log Fenster -->
+    <div class="right">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <div style="font-weight:700">Raw Log</div>
+        <div>
+          <button onclick="loadDemo()">Demo-Daten laden</button>
+          <button onclick="parseFromTextarea()">Parse aus Textfeld</button>
+        </div>
+      </div>
+      <textarea id="rawLog" style="width:100%; height:70%; min-height:320px; font-family:monospace; font-size:12px; padding:8px;">
+/* Optional: hier kannst du dein Log reinkopieren.
+Erwartetes einfaches JSON-Beispiel (falls du JSON exportierst):
+[
+  {"step":1, "epoch":1, "loss":1.34, "grad_norm":8.83, "learning_rate":6.233e-06, "eval_loss":0.778, "eval_accuracy":0.6616, "eval_f1":0.6036},
+  {"step":742, "epoch":2, "loss":0.5872, "grad_norm":32.88, "learning_rate":1.248e-05, "eval_loss":0.4699, "eval_accuracy":0.8072, "eval_f1":0.8090},
+  ...
+]
+*/
+      </textarea>
+      <div style="margin-top:8px; font-size:13px; color:#444">
+        <strong>Beschreibung der Tabs:</strong>
+        <ul>
+          <li><strong>Loss</strong>: Zeigt Trainingsloss (verlauf pro Schritt/Epoch) und Eval-Loss; hilfreich um Over/Underfitting zu erkennen.</li>
+          <li><strong>Grad Norm</strong>: Visualisiert grad_norm; Spitzen zeigen instabile Gradienten oder seltene große Updates.</li>
+          <li><strong>Learning Rate</strong>: Zeigt Scheduler-Verlauf; sinnvoll um Lernraten-Verhalten mit Performance zu korrelieren.</li>
+          <li><strong>Accuracy / F1 / Precision / Recall</strong>: Evaluationsmetriken pro Epoch; hier siehst du, ob Verbesserungen stabil sind.</li>
+          <li><strong>Legende</strong>: Definitionen der Metriken und Nutzertipps.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* ---------------------------
+   Datenformat / Beispiel
+   ---------------------------
+   Die Visualizer-Funktionen erwarten ein Array von Objekten (trainingsData),
+   jeder Eintrag kann Felder haben wie:
+     step, epoch, loss, grad_norm, learning_rate,
+     eval_loss, eval_accuracy, eval_f1, eval_precision, eval_recall
+   Beispiel (JSON):
+   [
+     {"step":371,"epoch":1,"loss":1.3446,"grad_norm":8.8371,"learning_rate":6.233e-06,
+      "eval_loss":0.7781,"eval_accuracy":0.6616,"eval_f1":0.6036},
+     {"step":742,"epoch":2,"loss":0.5872,"grad_norm":32.882,"learning_rate":1.248e-05,
+      "eval_loss":0.469988,"eval_accuracy":0.80728,"eval_f1":0.80909}
+   ]
+*/
+
+/* global variable holding parsed data */
+let trainingsData = [];
+
+/* --- Tabs setup --- */
+const tabs = [
+  { id: 'tab-loss', label: 'Loss & Eval' },
+  { id: 'tab-grad', label: 'Grad Norm' },
+  { id: 'tab-lr', label: 'Learning Rate' },
+  { id: 'tab-metrics', label: 'Accuracy / F1' },
+  { id: 'tab-legend', label: 'Legende' }
+];
+const tabsContainer = document.getElementById('tabs');
+tabs.forEach((t, i) => {
+  const btn = document.createElement('button');
+  btn.className = 'tab-btn' + (i===0? ' active':'');
+  btn.textContent = t.label;
+  btn.onclick = () => { document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active')); btn.classList.add('active'); document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active')); document.getElementById(t.id).classList.add('active'); };
+  tabsContainer.appendChild(btn);
+  if(i===0) document.getElementById(t.id).classList.add('active');
+});
+
+/* --- Demo loader --- */
+function loadDemo(){
+  const demo = [
+    {"step":371,"epoch":1,"loss":1.3446,"grad_norm":8.8371,"learning_rate":6.233153638814016e-06,"eval_loss":0.7781473994255066,"eval_accuracy":0.661608497723824,"eval_f1":0.6036111075115989,"eval_precision":0.5747313219002144,"eval_recall":0.661608497723824},
+    {"step":742,"epoch":2,"loss":0.5872,"grad_norm":32.88193893432617,"learning_rate":1.2483153638814016e-05,"eval_loss":0.4699881076812744,"eval_accuracy":0.8072837632776935,"eval_f1":0.8090864861095319,"eval_precision":0.8229205367280532,"eval_recall":0.8072837632776935},
+    {"step":1113,"epoch":3,"loss":0.3666,"grad_norm":4.485155582427979,"learning_rate":1.8733153638814018e-05,"eval_loss":0.35511618852615356,"eval_accuracy":0.8573596358118362,"eval_f1":0.8585287765165893,"eval_precision":0.8619190416606851,"eval_recall":0.8573596358118362},
+    {"step":1484,"epoch":4,"loss":0.2551,"grad_norm":3.9193296432495117,"learning_rate":2.4983153638814017e-05,"eval_loss":0.2990853488445282,"eval_accuracy":0.8861911987860395,"eval_f1":0.8859129040595549,"eval_precision":0.8886405029244917,"eval_recall":0.8861911987860395},
+    {"step":1855,"epoch":5,"loss":0.1665,"grad_norm":7.251168251037598,"learning_rate":3.1233153638814016e-05,"eval_loss":0.2627585232257843,"eval_accuracy":0.9059180576631259,"eval_f1":0.9040016968010313,"eval_precision":0.9146927501429046,"eval_recall":0.9059180576631259}
+  ];
+  trainingsData = demo;
+  document.getElementById('rawLog').value = JSON.stringify(demo, null, 2);
+  renderAll();
+}
+
+/* --- Simple parser from textarea content (attempts JSON, falls back to line parsing) --- */
+function parseFromTextarea(){
+  const txt = document.getElementById('rawLog').value.trim();
+  if(!txt) { alert('Kein Logtext gefunden'); return; }
+  try {
+    const parsed = JSON.parse(txt);
+    if(Array.isArray(parsed)) { trainingsData = parsed; renderAll(); return; }
+  } catch(e){
+    // try to parse line-by-line for python dict-like substrings (best-effort)
+  }
+  // best-effort extraction: find occurrences of {...} sequences and JSON.parse them
+  const matches = txt.match(/\{[^}]*\}/g);
+  const arr = [];
+  if(matches){
+    for(const m of matches){
+      try { arr.push(JSON.parse(m.replace(/(['"])?([a-zA-Z0-9_]+)(['"])?:/g,'"$2":'))); } catch(e) { /* skip */ }
+    }
+  }
+  if(arr.length) { trainingsData = arr; renderAll(); return; }
+  alert('Konnte die Daten nicht automatisch parsen; bitte JSON-Array einfügen (Beispiel im Textfeld)');
+}
+
+/* --- Data helpers --- */
+function seriesFrom(field, xField='step') {
+  const xs = [];
+  const ys = [];
+  for(const row of trainingsData){
+    if(row[field]!==undefined && row[xField]!==undefined){
+      xs.push(row[xField]);
+      ys.push(row[field]);
+    } else if(row[field]!==undefined && trainingsData.length>0 && trainingsData.indexOf(row)!==-1){
+      xs.push(trainingsData.indexOf(row)+1);
+      ys.push(row[field]);
+    }
+  }
+  return { x: xs, y: ys };
+}
+
+function epochSeries(field){
+  // aggregate by epoch: take last value per epoch (useful for eval metrics)
+  const map = new Map();
+  for(const row of trainingsData){
+    if(row.epoch===undefined) continue;
+    map.set(row.epoch, row);
+  }
+  const xs=[], ys=[];
+  for(const [e, r] of Array.from(map.entries()).sort((a,b)=>a[0]-b[0])){
+    if(r[field]!==undefined){ xs.push(e); ys.push(r[field]); }
+  }
+  return { x: xs, y: ys };
+}
+
+/* --- Plot rendering --- */
+function renderAll(){
+  renderLossChart();
+  renderGradChart();
+  renderLRChart();
+  renderMetricsChart();
+}
+
+/* Loss & eval (combined) */
+function renderLossChart(){
+  const lossSeries = seriesFrom('loss','step');
+  const evalLossSeries = epochSeries('eval_loss');
+
+  const traces = [];
+  if(lossSeries.x.length) traces.push({ x: lossSeries.x, y: lossSeries.y, name:'train_loss', mode:'lines+markers', line:{color:'#ff7f0e'} });
+  if(evalLossSeries.x.length) traces.push({ x: evalLossSeries.x, y: evalLossSeries.y, name:'eval_loss (epoch)', mode:'lines+markers', line:{color:'#1f77b4'} });
+
+  const layout = {
+    title: 'Train Loss und Eval Loss',
+    xaxis: { title: 'Schritt (step) / Epoch (eval)', automargin:true },
+    yaxis: { title: 'Loss', automargin:true },
+    legend: { orientation: "h" },
+    margin: { t:40, l:60, r:20, b:60 }
+  };
+  Plotly.newPlot('lossChart', traces, layout, {responsive:true});
+}
+
+/* grad_norm chart (eigenes Chart) */
+function renderGradChart(){
+  const g = seriesFrom('grad_norm','step');
+  const trace = { x:g.x, y:g.y, name:'grad_norm', mode:'lines+markers', line:{color:'#d62728'} };
+  const layout = { title:'Gradient Norm über Schritte', xaxis:{title:'step'}, yaxis:{title:'grad_norm'}, margin:{t:40,l:60,b:60} };
+  Plotly.newPlot('gradChart', [trace], layout, {responsive:true});
+}
+
+/* learning_rate chart (eigenes Chart) */
+function renderLRChart(){
+  const lr = seriesFrom('learning_rate','step');
+  const trace = { x:lr.x, y:lr.y, name:'learning_rate', mode:'lines+markers', line:{color:'#2ca02c'} };
+  const layout = { title:'Learning Rate Verlauf', xaxis:{title:'step'}, yaxis:{title:'learning_rate'}, margin:{t:40,l:60,b:60} };
+  Plotly.newPlot('lrChart', [trace], layout, {responsive:true});
+}
+
+/* Metrics (accuracy, f1, precision, recall) aggregated per epoch */
+function renderMetricsChart(){
+  const acc = epochSeries('eval_accuracy');
+  const f1 = epochSeries('eval_f1');
+  const prec = epochSeries('eval_precision');
+  const rec = epochSeries('eval_recall');
+
+  const traces = [];
+  if(acc.x.length) traces.push({ x:acc.x, y:acc.y, name:'accuracy', mode:'lines+markers', line:{color:'#1f77b4'} });
+  if(f1.x.length) traces.push({ x:f1.x, y:f1.y, name:'f1', mode:'lines+markers', line:{color:'#9467bd'} });
+  if(prec.x.length) traces.push({ x:prec.x, y:prec.y, name:'precision', mode:'lines+markers', line:{color:'#8c564b'} });
+  if(rec.x.length) traces.push({ x:rec.x, y:rec.y, name:'recall', mode:'lines+markers', line:{color:'#e377c2'} });
+
+  const layout = { title:'Eval-Metriken pro Epoch', xaxis:{title:'epoch'}, yaxis:{title:'Wert (0..1)'}, legend:{orientation:'h'}, margin:{t:40,l:60,b:60} };
+  Plotly.newPlot('metricsChart', traces, layout, {responsive:true});
+}
+
+/* --- Export helpers --- */
+function exportChart(divId){
+  const gd = document.getElementById(divId);
+  if(!gd) return;
+  Plotly.toImage(gd, {format:'png', height:800, width:1200})
+    .then(function(url){ const a = document.createElement('a'); a.href = url; a.download = divId + '.png'; document.body.appendChild(a); a.click(); a.remove(); })
+    .catch(err=> alert('Export fehlgeschlagen: '+err));
+}
+function exportData(divId){
+  // Export the underlying data of the plot as JSON (trace data)
+  const gd = document.getElementById(divId);
+  if(!gd || !gd.data) { alert('Kein Chartdaten gefunden'); return; }
+  const dump = gd.data.map(t => ({ name: t.name, x: t.x, y: t.y }));
+  const blob = new Blob([JSON.stringify(dump, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = divId + '.json'; document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/* init: try to parse textarea as JSON if present */
+(function init(){
+  try { const txt = document.getElementById('rawLog').value.trim(); if(txt){ const p = JSON.parse(txt); if(Array.isArray(p)){ trainingsData = p; renderAll(); } } } catch(e) { /* ignore */ }
+})();
+</script>
+</body>
+</html>
