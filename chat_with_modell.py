@@ -1,4 +1,4 @@
-# chat_with_modell.py (Modular / Multi-Modell / Validierung V2 / Batch V1.2 - Robust Mapping)
+# chat_with_modell.py (Modular / Multi-Modell / Validierung V2.1 / Batch V1.3)
 
 import os
 import re
@@ -126,6 +126,7 @@ def load_model_and_tokenizer(model_path):
 def predict_priority(subject, body, model, tokenizer, device, vocabs, priority_list, max_len):
     """
     Führt eine einzelne Vorhersage für ein neues Ticket durch.
+    Gibt das *native* Modell-Label zurück (z.B. 'critical').
     """
     neg_vocab, pos_vocab, sla_vocab = vocabs
     raw_text = str(body) + " " + str(subject)
@@ -155,6 +156,7 @@ def predict_priority(subject, body, model, tokenizer, device, vocabs, priority_l
     probabilities = torch.softmax(logits, dim=-1)[0]
     predicted_index = torch.argmax(probabilities).item()
 
+    # Das ist das native Label des Modells (z.B. "high")
     predicted_label = priority_list[predicted_index]
     confidence = probabilities[predicted_index].item()
 
@@ -165,71 +167,61 @@ def predict_priority(subject, body, model, tokenizer, device, vocabs, priority_l
 # VALIDIERUNGS- & BATCH-FUNKTIONEN (MODIFIZIERT)
 # ==============================================================================
 
-# --- NEU: Dynamische Label-Mapping Funktion ---
-def map_csv_labels(df, original_label_col, model_labels):
+def map_csv_labels(df, original_label_col, target_labels):
     """
-    Frägt den Benutzer, ob CSV-Labels (z.B. '1') auf Modell-Labels (z.B. 'high')
-    gemappt werden sollen, um einen Absturz oder 0% Genauigkeit zu verhindern.
+    Frägt den Benutzer, ob CSV-Labels (z.B. '1') auf Ziel-Labels (z.B. 'P1' oder 'high')
+    gemappt werden sollen.
 
     Gibt den DataFrame (potenziell gefiltert) und den Namen der neuen,
     gemappten Label-Spalte zurück.
     """
     print("\n" + "-" * 70)
-    print("--- Label-Abgleich (Mapping) ---")
+    print("--- Label-Abgleich (Mapping) für Genauigkeitsberechnung ---")
 
-    # KERNKORREKTUR: Alle originalen Labels sofort in String umwandeln
     df[original_label_col] = df[original_label_col].astype(str)
-
     unique_csv_labels = sorted(df[original_label_col].unique())
 
     print(f"Ihre CSV enthält die folgenden Labels in '{original_label_col}':")
     print(f"  -> {unique_csv_labels}")
-    print(f"Das Modell erwartet diese Labels:")
-    print(f"  -> {model_labels}")
+    print(f"Das Zielsystem (Modell-Output oder Ihr Mapping) erwartet diese Labels:")
+    print(f"  -> {target_labels}")
 
     mapping_dict = {}
-    # Die neue Spalte wird immer "mapped_label" heißen
     mapped_col_name = "mapped_label"
 
     while True:
         choice = input(
-            "\nSollen diese CSV-Labels für den Vergleich auf die Modell-Labels gemappt werden? (j/n): ").strip().lower()
+            "\nSollen diese CSV-Labels für den Vergleich auf die Ziel-Labels gemappt werden? (j/n): ").strip().lower()
 
         if choice == 'n':
-            print("  -> OK. Labels werden als reine Strings verglichen (z.B. '1' vs 'high').")
-            print("     (Dies führt wahrscheinlich zu 0% Genauigkeit, verhindert aber einen Absturz.)")
-            # Erstelle einfach eine String-Kopie
+            print("  -> OK. Labels werden als reine Strings verglichen (z.B. '1' vs 'P1').")
             df[mapped_col_name] = df[original_label_col].astype(str)
             return df, mapped_col_name
 
         elif choice == 'j':
-            print("  -> OK. Bitte weisen Sie die CSV-Labels den Modell-Labels zu.")
-            print(f"   Modell-Optionen: {model_labels} (oder 'skip', um ein Label zu ignorieren)")
+            print("  -> OK. Bitte weisen Sie die CSV-Labels den Ziel-Labels zu.")
+            print(f"   Ziel-Optionen: {target_labels} (oder 'skip', um ein Label zu ignorieren)")
 
             for csv_label in unique_csv_labels:
                 while True:
-                    prompt = f"    CSV-Label '{csv_label}' -> Modell-Label: "
-                    user_map = input(prompt).strip().lower()
+                    prompt = f"    CSV-Label '{csv_label}' -> Ziel-Label: "
+                    user_map = input(prompt).strip()  # Nicht lower(), falls Ziel 'P1' heißt
 
-                    if user_map in model_labels:
+                    if user_map in target_labels:
                         mapping_dict[csv_label] = user_map
                         print(f"      '{csv_label}' wird als '{user_map}' gezählt.")
                         break
-                    elif user_map == 'skip' or user_map == '':
-                        mapping_dict[csv_label] = pd.NA  # Wird später ignoriert
+                    elif user_map.lower() == 'skip' or user_map == '':
+                        mapping_dict[csv_label] = pd.NA
                         print(f"      '{csv_label}' wird ignoriert (übersprungen).")
                         break
                     else:
-                        print(f"    Ungültige Eingabe. Muss eines der folgenden sein: {model_labels} oder 'skip'")
+                        print(f"    Ungültige Eingabe. Muss eines der folgenden sein: {target_labels} oder 'skip'")
 
-            # 3. Mapping anwenden
             print("Wende Mapping an...")
-            # .map() wendet das Dict an. Labels, die nicht im dict sind (falls skip), werden zu NaN
             df[mapped_col_name] = df[original_label_col].map(mapping_dict)
 
-            # 4. Berichten und Filtern
             original_count = len(df)
-            # Entferne alle Zeilen, die ignoriert werden sollten (NaN)
             df.dropna(subset=[mapped_col_name], inplace=True)
             mapped_count = len(df)
 
@@ -237,23 +229,74 @@ def map_csv_labels(df, original_label_col, model_labels):
                 print(
                     f"  INFO: {original_count - mapped_count} Zeilen wurden ignoriert (da sie 'skip' oder kein Mapping hatten).")
 
-            print(f"  -> {len(df)} Zeilen werden für die Validierung verwendet.")
+            if mapped_count == 0:
+                print("  WARNUNG: Nach dem Mapping sind 0 Zeilen übrig.")
+            else:
+                print(f"  -> {len(df)} Zeilen werden für die Validierung verwendet.")
             return df, mapped_col_name
 
         else:
             print("  Ungültige Eingabe. Bitte 'j' oder 'n'.")
 
 
+def get_output_mapping(model_labels):
+    """
+    Frägt den Benutzer, ob die 5 Modell-Labels auf ein Zielsystem (z.B. 3 Stufen)
+    gemappt werden sollen.
+    Gibt ein Mapping-Dict (z.B. {'critical': 'P1', ...}) und die Liste der
+    neuen Ziel-Labels (z.B. ['P1', 'P2', 'P3']) zurück.
+    """
+    print("\n" + "-" * 70)
+    print("--- Optionales Output-Mapping (Skalierung) ---")
+    print("Das Modell gibt 5 Stufen aus:", model_labels)
+
+    mapping_dict = {}
+
+    while True:
+        choice = input(
+            "Möchten Sie diese 5 Stufen auf ein anderes System (z.B. 3 Stufen) mappen? (j/n): ").strip().lower()
+
+        if choice == 'n':
+            print("  -> OK. Die 5 nativen Modell-Labels werden verwendet.")
+            # Rückgabe: Leeres Dict und die originalen Labels
+            return None, model_labels
+
+        elif choice == 'j':
+            print("  -> OK. Bitte definieren Sie Ihr Zielsystem.")
+            print("     Geben Sie für jedes Modell-Label das entsprechende Ziel-Label ein (z.B. 'P1', 'Hoch', '1')")
+
+            final_target_labels = set()
+            for model_label in model_labels:
+                while True:
+                    prompt = f"    Modell-Label '{model_label}' -> Ziel-Label: "
+                    user_map = input(prompt).strip()
+
+                    if user_map:
+                        mapping_dict[model_label] = user_map
+                        final_target_labels.add(user_map)
+                        print(f"      '{model_label}' wird zu '{user_map}'")
+                        break
+                    else:
+                        print("    Eingabe darf nicht leer sein.")
+
+            print(f"\n✅ Output-Mapping erstellt. Neue Ziel-Labels sind: {sorted(list(final_target_labels))}")
+            return mapping_dict, sorted(list(final_target_labels))
+
+        else:
+            print("  Ungültige Eingabe. Bitte 'j' oder 'n'.")
+
+
+# --- MODIFIZIERT: Funktion für detaillierte Validierung ---
 def run_detailed_validation(model, tokenizer, device, vocabs, model_info):
     """
     Führt eine detaillierte, interaktive Validierung durch (Konfusionsmatrix).
-    (MODIFIZIERT: Nutzt jetzt map_csv_labels)
+    (MODIFIZIERT: Nutzt jetzt Output-Mapping und dynamischen Speicherort)
     """
     print("\n" + "=" * 70)
     print("--- Detaillierte Validierung starten (Konfusionsmatrix) ---")
 
     model_path = model_info['path']
-    priority_list = model_info['labels']
+    model_labels = model_info['labels']  # (z.B. ['critical', ...])
     max_len = model_info['max_len']
 
     # --- 1. Validierungs-CSV auswählen ---
@@ -285,17 +328,20 @@ def run_detailed_validation(model, tokenizer, device, vocabs, model_info):
         print(f"❌ FEHLER: CSV muss die Spalten '{', '.join(required_cols)}' enthalten.")
         return
 
-    # --- 3. NEU: Label-Mapping ---
-    # Diese Funktion behebt den ValueError (String vs Number)
-    # df_mapped ist der (potenziell gefilterte) DataFrame
-    # mapped_label_col ist der Name der neuen Spalte (z.B. "mapped_label")
-    df_mapped, mapped_label_col = map_csv_labels(df, label_col, priority_list)
+    # --- 3. NEU: Output-Mapping (Skalierung) (Goal 1) ---
+    output_map, final_target_labels = get_output_mapping(model_labels)
+    # final_target_labels ist z.B. ['P1', 'P2', 'P3'] oder ['critical', ...]
+
+    # --- 4. Input-Label-Mapping (CSV -> Ziel-Labels) ---
+    # map_csv_labels mappt jetzt die CSV-Labels (z.B. '1') auf die
+    # final_target_labels (z.B. 'P1')
+    df_mapped, mapped_label_col = map_csv_labels(df, label_col, final_target_labels)
 
     if df_mapped.empty:
         print("❌ FEHLER: Nach dem Label-Mapping sind keine Daten mehr übrig. Breche ab.")
         return
 
-    # --- 4. Sampling-Modus ---
+    # --- 5. Sampling-Modus ---
     print("\nWelche Tickets sollen validiert werden?")
     print("  [1] Alle Tickets (die gemappt werden konnten)")
     print("  [2] Manuelle Anzahl pro (gemappter) Prioritäts-Klasse")
@@ -311,9 +357,9 @@ def run_detailed_validation(model, tokenizer, device, vocabs, model_info):
             print(f"✅ Alle {len(df_sample)} gemappten Tickets werden validiert.")
             break
         elif mode_choice == '2':
-            print("  Definiere die Anzahl der Tickets pro Klasse (Enter = 0):")
+            print(f"  Definiere die Anzahl der Tickets pro Klasse (Ziel-Labels: {final_target_labels}):")
             counts_dict = {}
-            for label in priority_list:
+            for label in final_target_labels:
                 while True:
                     count_str = input(f"    Anzahl für '{label}': ").strip() or "0"
                     try:
@@ -324,7 +370,6 @@ def run_detailed_validation(model, tokenizer, device, vocabs, model_info):
 
             print("Sammle Samples...")
             sample_list = []
-            # Gruppiere nach der NEUEN, gemappten Spalte
             df_grouped = df_mapped.groupby(mapped_label_col)
             for label, count in counts_dict.items():
                 if count == 0:
@@ -351,66 +396,94 @@ def run_detailed_validation(model, tokenizer, device, vocabs, model_info):
         else:
             print("  Ungültige Eingabe. Bitte '1' oder '2'.")
 
-    # --- 5. Vorhersage-Schleife (mit tqdm) ---
+    # --- 6. Vorhersage-Schleife (mit tqdm) ---
     print(f"\nStarte Vorhersage für {len(df_sample)} Tickets...")
 
-    # KORREKTUR: 'originals' kommt jetzt aus der gemappten Spalte
     originals = df_sample[mapped_label_col].tolist()
     predictions = []
 
     disable_tqdm = len(df_sample) < 10
 
     for _, row in tqdm(df_sample.iterrows(), total=len(df_sample), desc="Validiere", disable=disable_tqdm):
+        # 1. Hole native Modell-Vorhersage (z.B. 'critical')
         predicted_label, _ = predict_priority(
             row[subj_col], row[body_col],
-            model, tokenizer, device, vocabs, priority_list, max_len
+            model, tokenizer, device, vocabs, model_labels, max_len  # Wichtig: model_labels (5)
         )
+
+        # 2. Wende Output-Mapping an (z.B. 'critical' -> 'P1')
+        if output_map:
+            predicted_label = output_map.get(predicted_label, predicted_label)
+
         predictions.append(predicted_label)
 
     print("✅ Validierung abgeschlossen.")
     print("-" * 70)
 
-    # --- 6. Ergebnisse auswerten (Text) ---
+    # --- 7. Ergebnisse auswerten (Text) ---
     accuracy = accuracy_score(originals, predictions)
     print(f"Gesamt-Genauigkeit (Accuracy) [{sample_mode} Samples]: {accuracy:.2%}")
     print("\nDetail-Auswertung (Classification Report):")
 
-    # Finde alle Labels, die *entweder* im Original (gemappt) *oder* in der Vorhersage vorkommen
     all_present_labels = sorted(list(set(originals) | set(predictions)))
 
     report = classification_report(
         originals,
         predictions,
-        labels=all_present_labels,  # Zeige alle Labels, die gefunden wurden
+        labels=all_present_labels,
         zero_division=0
     )
     print(report)
     print("-" * 70)
 
-    # --- 7. Ergebnisse auswerten (Grafik) ---
+    # --- 8. Ergebnisse auswerten (Grafik) ---
     try:
-        # Verwende die volle Modell-Liste, um die Matrix konsistent zu halten
-        cm = confusion_matrix(originals, predictions, labels=priority_list)
+        # KORREKTUR (Goal 1): Verwende die final_target_labels für die Achsen
+        cm = confusion_matrix(originals, predictions, labels=final_target_labels)
 
-        plt.figure(figsize=(10, 7))
+        plt.figure(figsize=(max(8, len(final_target_labels) * 2), max(6, len(final_target_labels) * 1.5)))
         sns.heatmap(
             cm,
             annot=True,
             fmt='d',
             cmap='Blues',
-            xticklabels=priority_list,
-            yticklabels=priority_list
+            xticklabels=final_target_labels,
+            yticklabels=final_target_labels
         )
         plt.title(
             f'Konfusionsmatrix - {os.path.basename(model_path)}\n[{sample_mode} Samples / Genauigkeit: {accuracy:.2%}]')
         plt.ylabel('Wahres Label (aus CSV, gemappt)')
-        plt.xlabel('Vorhergesagtes Label (Modell)')
+        plt.xlabel('Vorhergesagtes Label (Modell, gemappt)')
 
+        # KORREKTUR (Goal 2): Dynamischer Speicherort
         timestamp = int(time.time())
-        output_filename = os.path.join(model_path, f"validierungs_matrix_{timestamp}.png")
+        matrix_name = f"validierungs_matrix_{timestamp}.png"
+        output_filename = ""
+
+        # Prüfe, ob die Validierungs-CSV die Trainings-CSV ist
+        is_training_csv = False
+        training_csv_path = model_info.get('training_csv')
+        if training_csv_path and training_csv_path != "N/A":
+            try:
+                # Vergleiche absolute Pfade
+                is_training_csv = os.path.abspath(filepath) == os.path.abspath(training_csv_path)
+            except Exception:
+                pass  # Fehler beim Pfadvergleich
+
+        if is_training_csv:
+            # Speichere im Hauptordner
+            output_filename = os.path.join(model_path, matrix_name)
+            print(f"  -> Validierung mit Trainings-CSV erkannt. Speichere Matrix in: {output_filename}")
+        else:
+            # Speichere im 'processed_csv' Ordner
+            timestamp_date = datetime.now().strftime("%Y-%m-%d")
+            output_subdir = os.path.join(model_path, f"processed_csv_{timestamp_date}")
+            os.makedirs(output_subdir, exist_ok=True)
+            output_filename = os.path.join(output_subdir, matrix_name)
+            print(f"  -> Validierung mit externer CSV. Speichere Matrix in: {output_filename}")
 
         plt.savefig(output_filename, bbox_inches='tight')
-        print(f"✅ Grafik wurde gespeichert in: {output_filename}")
+        print(f"✅ Grafik wurde gespeichert.")
 
     except Exception as e:
         print(f"❌ FEHLER beim Erstellen der Grafik: {e}")
@@ -429,7 +502,7 @@ def run_batch_classification(model, tokenizer, device, vocabs, model_info):
     print("--- Batch-Klassifizierung starten ---")
 
     model_path = model_info['path']
-    priority_list = model_info['labels']
+    model_labels = model_info['labels']  # (z.B. ['critical', ...])
     max_len = model_info['max_len']
 
     # --- 1. Quell-CSV auswählen ---
@@ -460,7 +533,7 @@ def run_batch_classification(model, tokenizer, device, vocabs, model_info):
         print(f"❌ FEHLER: CSV muss die Spalten '{', '.join(required_cols)}' enthalten.")
         return
 
-    # --- 3. Original-Priorität prüfen (Goal 6) ---
+    # --- 3. Original-Priorität prüfen ---
     has_orig_priority = False
     original_label_col = None
     if 'priority' in df.columns:
@@ -473,7 +546,7 @@ def run_batch_classification(model, tokenizer, device, vocabs, model_info):
         original_label_col = 'orig_priority'
         has_orig_priority = True
 
-    # --- 4. Vorhersage-Schleife (Goal 5) ---
+    # --- 4. Vorhersage-Schleife ---
     print(f"\nStarte Klassifizierung für {len(df)} Tickets...")
 
     predictions = []
@@ -484,7 +557,7 @@ def run_batch_classification(model, tokenizer, device, vocabs, model_info):
     for _, row in tqdm(df.iterrows(), total=len(df), desc="Klassifiziere"):
         predicted_label, confidence = predict_priority(
             row[subj_col], row[body_col],
-            model, tokenizer, device, vocabs, priority_list, max_len
+            model, tokenizer, device, vocabs, model_labels, max_len
         )
         predictions.append(predicted_label)
         confidences.append(confidence)
@@ -492,30 +565,45 @@ def run_batch_classification(model, tokenizer, device, vocabs, model_info):
     end_time = time.time()
     duration_sec = end_time - start_time
 
-    df['predicted_priority'] = predictions
+    df['predicted_priority_native'] = predictions  # Speichere die native 5-Stufen-Antwort
     df['confidence'] = confidences
 
     print("✅ Klassifizierung abgeschlossen.")
-    print("-" * 70)
 
-    # --- 5. Genauigkeit berechnen (falls möglich) ---
+    # --- 5. Optionales Output-Mapping (Skalierung) ---
+    output_map, final_target_labels = get_output_mapping(model_labels)
+
+    if output_map:
+        print("Wende Output-Mapping an...")
+        # Erstelle eine neue Spalte für die gemappte Prio
+        df['predicted_priority'] = df['predicted_priority_native'].map(output_map)
+        print("✅ Output-Mapping abgeschlossen.")
+    else:
+        # Wenn kein Mapping, ist die native Prio die finale Prio
+        df['predicted_priority'] = df['predicted_priority_native']
+
+    # --- 6. Genauigkeit berechnen (falls möglich) ---
+    print("-" * 70)
     accuracy_str = "N/A (Keine 'orig_priority' Spalte gefunden)"
     if has_orig_priority:
-        # Erstelle eine *temporäre* Kopie für das Mapping
+        # Vergleiche die 'orig_priority' Spalte mit den *finalen* Ziel-Labels
         df_for_metrics, mapped_label_col = map_csv_labels(
-            df.copy(),  # WICHTIG: Kopie, damit Original-DF nicht gefiltert wird
+            df.copy(),
             original_label_col,
-            priority_list
+            final_target_labels
         )
 
-        try:
-            # Vergleiche die gemappten Labels mit den Vorhersagen
-            accuracy = accuracy_score(df_for_metrics[mapped_label_col], df_for_metrics['predicted_priority'])
-            accuracy_str = f"{accuracy:.4f} ({accuracy:.2%}) (basiert auf {len(df_for_metrics)} gemappten Zeilen)"
-        except Exception as e:
-            accuracy_str = f"Fehler bei Berechnung: {e}"
+        if df_for_metrics.empty:
+            accuracy_str = "N/A (Keine Labels konnten gemappt werden)"
+        else:
+            try:
+                # Vergleiche die gemappten Original-Labels mit den (potenziell) gemappten Vorhersagen
+                accuracy = accuracy_score(df_for_metrics[mapped_label_col], df_for_metrics['predicted_priority'])
+                accuracy_str = f"{accuracy:.4f} ({accuracy:.2%}) (basiert auf {len(df_for_metrics)} gemappten Zeilen)"
+            except Exception as e:
+                accuracy_str = f"Fehler bei Berechnung: {e}"
 
-    # --- 6. Ergebnisse speichern (Goal 3 & 4) ---
+    # --- 7. Ergebnisse speichern ---
     try:
         timestamp_date = datetime.now().strftime("%Y-%m-%d")
         timestamp_full = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -530,7 +618,6 @@ def run_batch_classification(model, tokenizer, device, vocabs, model_info):
         output_csv_path = os.path.join(output_subdir, output_csv_name)
         output_summary_path = os.path.join(output_subdir, output_summary_name)
 
-        # Speichere den *vollständigen*, un-gemappten DataFrame
         df.to_csv(output_csv_path, index=False, encoding='utf-8-sig')
 
         with open(output_summary_path, "w", encoding="utf-8") as f:
@@ -565,6 +652,7 @@ def interactive_chat_mode(model, tokenizer, device, vocabs, priority_list, max_l
     print("\n--- Interaktiver KI-Priorisierungs-Chat ---")
     print(f"Modell: {os.path.basename(model.config.name_or_path)} ({len(priority_list)} Labels, max_len={max_len})")
     print("Gib 'exit' oder 'quit' ein, um zum Hauptmenü zurückzukehren.")
+    print("HINWEIS: Dieser Chat gibt die *nativen* 5 Modell-Labels aus (z.B. 'critical').")
     print("-" * 30)
 
     while True:
@@ -607,9 +695,9 @@ def show_model_action_menu(model_info, vocabs):
         print(f"Max. Tokenlänge: {max_len}")
         print(f"Trainings-CSV: {model_info.get('training_csv', 'N/A')}")
         print("-" * 70)
-        print("  [1] Interaktiven Chat starten")
-        print("  [2] Detaillierte Validierung starten (Konfusionsmatrix)")
-        print("  [3] Batch-Klassifizierung einer CSV-Datei (NEU)")
+        print("  [1] Interaktiven Chat starten (nutzt native 5 Labels)")
+        print("  [2] Detaillierte Validierung starten (Konfusionsmatrix & Skalierung)")
+        print("  [3] Batch-Klassifizierung einer CSV-Datei (mit Skalierung)")
         print("  [b] Zurück zur Modellauswahl")
 
         choice = input("Wähle eine Option: ").strip().lower()
@@ -693,7 +781,7 @@ def find_available_models():
         summary_path = os.path.join(path, "training_setup_summary.txt")
 
         if not os.path.exists(config_path):
-            print(f"ℹ️  '{path}' enthält keine 'config.json'. Überspringe.")
+            # print(f"ℹ️  '{path}' enthält keine 'config.json'. Überspringe.") # Weniger störend
             continue
 
         try:
